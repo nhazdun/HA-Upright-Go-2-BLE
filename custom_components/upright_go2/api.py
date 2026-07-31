@@ -339,9 +339,12 @@ class UprightGo2Client:
             if (power_first := await self._read(CHAR_POWER_DATA_FIRST)) and len(
                 power_first
             ) > OFFSET_BATTERY_LEVEL:
-                data.battery_level = translate_battery_level(
-                    power_first[OFFSET_BATTERY_LEVEL]
-                )
+                # A freshly reconnected device reports level 0 ("unknown") for
+                # the first read or two. Keep the last real reading rather than
+                # blanking the sensor after every reconnect.
+                level = translate_battery_level(power_first[OFFSET_BATTERY_LEVEL])
+                if level is not None:
+                    data.battery_level = level
 
             if (power_second := await self._read(CHAR_POWER_DATA_SECOND)) and len(
                 power_second
