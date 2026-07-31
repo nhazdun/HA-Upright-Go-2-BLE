@@ -272,6 +272,35 @@ survives periods with no Bluetooth connection. This is what makes per-day
 | `baa5` | `ONLINE_DATA`       | live stream                            |
 | `baa6` | `CURRENT_TIMESTAMP` | device clock                           |
 
+### Download handshake
+
+`DataTransferCommand`, written as a single byte to `baa2` DATA_COMMAND:
+
+```
+0  START_TRANSFER_WITH_APPROVAL     3  SEND_NEXT
+1  START_TRANSFER_NO_APPROVAL       4  RESEND_CURRENT
+2  DELETE_DATA                      5  CLEAN_TIMESTAMP
+                                    6  DIRTY_TIMESTAMP
+```
+
+The flow is: subscribe to `baa4` OFFLINE_DATA, write `START_TRANSFER_NO_APPROVAL`,
+then acknowledge every packet with `SEND_NEXT` — the device does not send the
+next one unprompted. `0xFF` ends the stream. `DELETE_DATA` erases the history,
+which is the only destructive command here.
+
+### Stream framing
+
+`fillIntervalsToSessionInProgress` walks the bytes and decides per byte:
+
+- `isEndOfData(b)` → `b == 0xFF`
+- `isNewSessionHeader(intervalFrequency, b)` → `(b >> 4) == intervalFrequency`
+  **and** `(b & 0x0F)` is `7` (clean) or `15` (dirty)
+- anything else is a one-byte interval record
+
+The discriminator is the configured interval frequency, so with the default
+`EVERY_10_SEC` (7) a session header starts with `0x77` or `0x7F`. Headers are
+10 bytes.
+
 ### Record: one interval = one byte
 
 `byteArrayToInterval`:
