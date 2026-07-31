@@ -257,6 +257,64 @@ The write payload is the mode **twice** — the app calls
 The app also subscribes to this characteristic (`monitorCharacteristic`) rather
 than only reading it.
 
+## DATA service — stored history
+
+The device records posture continuously and keeps it on-board, so history
+survives periods with no Bluetooth connection. This is what makes per-day
+"time slouching / time upright" totals possible without HA being connected.
+
+| Short  | Name                | Role                                   |
+|--------|---------------------|----------------------------------------|
+| `baa1` | `DATA_AMOUNT`       | how many records are stored            |
+| `baa2` | `DATA_COMMAND`      | start/control a download               |
+| `baa3` | `PACKET_NUMBER`     | packet cursor                          |
+| `baa4` | `OFFLINE_DATA`      | the stored stream                      |
+| `baa5` | `ONLINE_DATA`       | live stream                            |
+| `baa6` | `CURRENT_TIMESTAMP` | device clock                           |
+
+### Record: one interval = one byte
+
+`byteArrayToInterval`:
+
+| Bits | Field              | Meaning                        |
+|------|--------------------|--------------------------------|
+| 7    | `posture`          | `0` straight, `1` slouch       |
+| 6    | `vibrationState`   |                                |
+| 5-4  | `movement`         | `(b >> 4) & 0x03`              |
+| 2-0  | `vibrationCounter` | `b & 0x07`                     |
+
+Each record covers `convertDataIntervalToSec(dataInterval)` seconds, where
+`dataInterval` is byte 0 of GENERAL_SETTING (`IntervalFrequency`: 1 → 1 s,
+5 → 5 s, 7 → 10 s, 10 → 30 s, 11 → 60 s).
+
+So daily totals are just a count of records by bit 7, multiplied by the
+interval length.
+
+### Record: session header
+
+`byteArrayToSessionHeader`:
+
+| Offset | Field           | Encoding                            |
+|--------|-----------------|-------------------------------------|
+| 0      | `isClean`       | clean/dirty timestamp flag          |
+| 1–4    | `timestamp`     | see below                           |
+| 5–6    | `delay`         | `valueFromBytesDivided`             |
+| 7      | `pattern`       | `(byte >> 4) & 0x03`                |
+| 7      | `range`         | `byte & 0x0F`                       |
+| 8–9    | `angleStraight` | `valueFromBytesDivided`             |
+
+Headers carry the wall-clock time; the interval bytes that follow are offsets
+from it.
+
+### Counters
+
+```
+byteArrayToCurrentTimestamp(b) = b[1] + b[2]*2^8 + b[3]*2^16 + b[4]*2^32
+byteArrayToDataAmount(b)       = b[0] + b[1]*2^8 + b[2]*2^16
+```
+
+Note the timestamp skips `2^24` — that is what the app does, not a typo here.
+
 ## TEST service
 
 `bae3` VIBRATION_PRODUCTION_COMMAND — write single byte from
