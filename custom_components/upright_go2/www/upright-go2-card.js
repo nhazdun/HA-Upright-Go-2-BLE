@@ -10,6 +10,8 @@ const GREEN = "#20c05c";
 const GREEN_SOFT = "#8fe0ac";
 const RED = "#e2483c";
 const RED_SOFT = "#f0938c";
+const GREY = "#8b9096";
+const GREY_SOFT = "#b9bec4";
 
 const DEFAULTS = {
   // Angle readings that correspond to fully upright and fully slouched. The
@@ -139,7 +141,15 @@ class UprightGo2Card extends HTMLElement {
           white-space: nowrap;
         }
         .dot { width: 8px; height: 8px; border-radius: 50%; }
-        .stage { flex: 1; display: flex; justify-content: center; min-height: 0; }
+        .stage {
+          flex: 1;
+          display: flex;
+          justify-content: center;
+          min-height: 0;
+          transition: opacity .3s ease;
+        }
+        .stage.offline { opacity: .55; }
+        .stage.offline #figure { transition: none; }
         svg { width: 100%; height: 100%; max-height: 320px; overflow: visible; }
         .ring-track { stroke: var(--divider-color, #e3e3e3); }
         .ring {
@@ -222,6 +232,7 @@ class UprightGo2Card extends HTMLElement {
 
     const $ = (id) => this.shadowRoot.getElementById(id);
     this._el = {
+      stage: this.shadowRoot.querySelector(".stage"),
       ring: $("ring"), figure: $("figure"), head: $("head"), body: $("body"),
       belly: $("belly"), angle: $("angle"), pill: $("pill"), dot: $("dot"),
       pillText: $("pill-text"), tUp: $("t-up"), tDown: $("t-down"),
@@ -234,13 +245,13 @@ class UprightGo2Card extends HTMLElement {
     this._circumference = circumference;
 
     this._el.cCal.addEventListener("click", () => {
-      if (!this._config.calibrate) return;
+      if (!this._config.calibrate || this._el.cCal.hasAttribute("disabled")) return;
       this._hass.callService("button", "press", {
         entity_id: this._config.calibrate,
       });
     });
     this._el.cVib.addEventListener("click", () => {
-      if (!this._config.vibration) return;
+      if (!this._config.vibration || this._el.cVib.hasAttribute("disabled")) return;
       this._hass.callService("switch", "toggle", {
         entity_id: this._config.vibration,
       });
@@ -286,9 +297,17 @@ class UprightGo2Card extends HTMLElement {
     const el = this._el;
     const cfg = this._config;
 
+    const dead = (state) =>
+      !state || state.state === "unavailable" || state.state === "unknown";
+
+    // The device drops off often enough — out of range, on the charger, asleep
+    // — that the figure must not keep showing a confident green or red pose
+    // from whatever was last seen. Grey it out instead.
     const slouchState = this._state("slouching");
+    const angleState = this._state("angle");
+    const offline = dead(slouchState) && dead(angleState);
     const slouching = slouchState ? slouchState.state === "on" : false;
-    const known = slouchState && !["unknown", "unavailable"].includes(slouchState.state);
+    const known = !offline && !dead(slouchState);
 
     const angle = this._num("angle");
     const span = cfg.slouch_angle - cfg.upright_angle;
@@ -298,30 +317,43 @@ class UprightGo2Card extends HTMLElement {
     }
 
     // The ring fills as posture degrades, matching the app's behaviour.
-    const filled = known ? 0.15 + ratio * 0.85 : 0;
+    const filled = offline ? 0 : known ? 0.15 + ratio * 0.85 : 0;
     this._set(el.ring, "strokeDashoffset", `${this._circumference * (1 - filled)}`);
-    this._set(el.ring, "stroke", slouching ? RED : GREEN);
+    this._set(el.ring, "stroke", offline ? GREY : slouching ? RED : GREEN);
 
-    this._set(el.figure, "transform", `rotate(${(ratio * cfg.max_tilt).toFixed(1)}deg)`);
-    const solid = slouching ? RED : GREEN;
-    const soft = slouching ? RED_SOFT : GREEN_SOFT;
+    // Stand the figure straight when there is nothing to report, so a stale
+    // lean is not mistaken for a live one.
+    const tilt = offline ? 0 : ratio * cfg.max_tilt;
+    this._set(el.figure, "transform", `rotate(${tilt.toFixed(1)}deg)`);
+    el.stage.classList.toggle("offline", offline);
+    const solid = offline ? GREY : slouching ? RED : GREEN;
+    const soft = offline ? GREY_SOFT : slouching ? RED_SOFT : GREEN_SOFT;
     this._set(el.head, "fill", soft);
     this._set(el.body, "fill", solid);
     this._set(el.belly, "fill", soft);
 
-    this._set(el.angle, "text", angle === undefined ? "" : `${angle.toFixed(1)}°`);
+    this._set(
+      el.angle,
+      "text",
+      offline ? "—" : angle === undefined ? "" : `${angle.toFixed(1)}°`,
+    );
 
     const battery = this._num("battery");
     let label;
-    if (!known) label = "No data";
+    if (offline) label = "Disconnected";
+    else if (!known) label = "No data";
     else label = slouching ? "Slouching" : "Upright";
-    if (battery !== undefined) label += ` · ${Math.round(battery)}%`;
+    if (!offline && battery !== undefined) label += ` · ${Math.round(battery)}%`;
     el.pillText.textContent = label;
-    el.dot.style.background = known ? (slouching ? RED : GREEN) : "var(--disabled-text-color)";
+    el.dot.style.background = known
+      ? slouching ? RED : GREEN
+      : "var(--disabled-text-color)";
     el.pill.style.background = known
       ? slouching ? "rgba(226,72,60,.12)" : "rgba(32,192,92,.12)"
       : "var(--secondary-background-color)";
-    el.pill.style.color = known ? (slouching ? RED : GREEN) : "var(--secondary-text-color)";
+    el.pill.style.color = known
+      ? slouching ? RED : GREEN
+      : "var(--secondary-text-color)";
 
     this._set(el.tUp, "text", this._duration("upright_time"));
     this._set(el.tDown, "text", this._duration("slouching_time"));
@@ -331,12 +363,12 @@ class UprightGo2Card extends HTMLElement {
     el.iVib.setAttribute("icon", vibOn === false ? "mdi:vibrate-off" : "mdi:vibrate");
     el.iVib.style.color = vibOn ? GREEN : "var(--secondary-text-color)";
     el.sVib.textContent = vibOn === undefined ? "Vibration" : vibOn ? "Vibration on" : "Vibration off";
-    el.cVib.toggleAttribute("disabled", !this._config.vibration);
+    el.cVib.toggleAttribute("disabled", offline || !this._config.vibration);
 
     const delay = this._num("delay");
     el.sDel.textContent = delay === undefined ? "Delay" : `${Math.round(delay)}s delay`;
-    el.cDel.toggleAttribute("disabled", !this._config.delay);
-    el.cCal.toggleAttribute("disabled", !this._config.calibrate);
+    el.cDel.toggleAttribute("disabled", offline || !this._config.delay);
+    el.cCal.toggleAttribute("disabled", offline || !this._config.calibrate);
   }
 }
 
