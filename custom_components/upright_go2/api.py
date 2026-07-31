@@ -74,6 +74,8 @@ from .history import (
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 20.0
+# Give up on a dump once the device has been silent this long.
+IDLE_TIMEOUT = 8.0
 
 # 0xFF is the app's IGNORE_VALUE; C3 BF is that byte after a UTF-8 round trip.
 _FILLER_BYTES = frozenset({0x00, 0xFF, 0xC3, 0xBF})
@@ -498,7 +500,7 @@ class UprightGo2Client:
         """Put the device into deep sleep."""
         await self._async_write(CHAR_HAL_CONTROL, bytes([HalControlCommand.DEEP_SLEEP]))
 
-    async def async_download_history(self, timeout: float = 120.0) -> list[Interval]:
+    async def async_download_history(self, timeout: float = 90.0) -> list[Interval]:
         """Download the stored posture history and parse it.
 
         The device streams packets on OFFLINE_DATA; each one has to be
@@ -541,10 +543,13 @@ class UprightGo2Client:
             failure: Exception | None = None
             packets = 0
 
+            packet_seen = asyncio.Event()
+
             def on_packet(_char: BleakGATTCharacteristic, payload: bytearray) -> None:
                 nonlocal failure, packets
                 packets += 1
                 buffer.extend(payload)
+                packet_seen.set()
 
                 if not payload or (wanted is not None and len(buffer) >= wanted):
                     finished.set()
@@ -582,17 +587,35 @@ class UprightGo2Client:
                     bytes([DataTransferCommand.START_TRANSFER_NO_APPROVAL]),
                     response=True,
                 )
-                try:
-                    await asyncio.wait_for(finished.wait(), timeout)
-                except TimeoutError:
-                    _LOGGER.warning(
-                        "History download timed out after %ss: %d packets, %d of"
-                        " ~%s bytes. Keeping what arrived.",
-                        timeout,
-                        packets,
-                        len(buffer),
-                        wanted if wanted is not None else "?",
-                    )
+                # Stop on the overall deadline, but also give up early once the
+                # device has gone quiet — waiting the full timeout for packets
+                # that will never come just holds the connection hostage.
+                deadline = time.monotonic() + timeout
+                while not finished.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _LOGGER.warning(
+                            "History download hit its %ss deadline: %d packets,"
+                            " %d of ~%s bytes. Keeping what arrived.",
+                            timeout,
+                            packets,
+                            len(buffer),
+                            wanted if wanted is not None else "?",
+                        )
+                        break
+                    packet_seen.clear()
+                    try:
+                        await asyncio.wait_for(
+                            packet_seen.wait(), min(IDLE_TIMEOUT, remaining)
+                        )
+                    except TimeoutError:
+                        if not finished.is_set():
+                            _LOGGER.debug(
+                                "Device went quiet after %d packets, %d bytes",
+                                packets,
+                                len(buffer),
+                            )
+                        break
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"History download failed: {err}") from err
             finally:

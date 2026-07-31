@@ -297,9 +297,32 @@ which is the only destructive command here.
   **and** `(b & 0x0F)` is `7` (clean) or `15` (dirty)
 - anything else is a one-byte interval record
 
-The discriminator is the configured interval frequency, so with the default
-`EVERY_10_SEC` (7) a session header starts with `0x77` or `0x7F`. Headers are
-10 bytes.
+Headers are 10 bytes.
+
+**The high nibble cannot be read off the device.** The app passes
+`this.intervalDuration`, which `handleOfflineSetup` fills from an internal setup
+object (`duration`, `expectedAmount`, `expectedSessions`, `currentTime`,
+`counterClean`) rather than from anything on the wire — so whether it holds the
+`IntervalFrequency` enum value or the interval length in seconds is not
+decidable from the bytecode alone.
+
+That matters, because guessing wrong is not a small error: header bytes get
+consumed as intervals, and the first `0xFF` among them looks like the end of
+the stream. This integration therefore does not guess. It downloads the dump by
+size and then tries every candidate nibble, keeping the framing that best
+reproduces the record count the device reported.
+
+### Counters, revisited
+
+`DATA_AMOUNT` (`baa1`) carries both numbers the app needs:
+
+| Offset | Field                     |
+|--------|---------------------------|
+| 0–2    | `expectedOfflineDataAmount` — record count |
+| 3      | `expectedOfflineSessions` — session count  |
+
+Together they give the expected dump size: `records + 10 × sessions`. Packets
+arrive in 20-byte chunks (`currentAmount += 20` in the app's reader).
 
 ### Record: one interval = one byte
 

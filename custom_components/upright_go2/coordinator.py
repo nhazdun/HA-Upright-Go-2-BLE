@@ -7,6 +7,7 @@ connection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -68,6 +69,7 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
             seconds=entry.options.get(CONF_HISTORY_INTERVAL, DEFAULT_HISTORY_INTERVAL)
         )
         self._slug = address.replace(":", "").lower()
+        self._history_task: asyncio.Task[None] | None = None
 
     def _handle_notification(self, data: UprightGo2Data) -> None:
         """Push a notification-driven update to the entities.
@@ -107,19 +109,30 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         due = data.history_synced is None or (
             dt_util.utcnow() - data.history_synced >= self._history_interval
         )
-        if due:
-            try:
-                await self.async_sync_history()
-            except UprightGo2Error as err:
-                # The live values are already in hand; a failed history sync
-                # should not mark the whole update as failed.
-                _LOGGER.debug("History sync failed: %s", err)
+        if due and (self._history_task is None or self._history_task.done()):
+            # Never await this here. A dump can take a minute, and the first
+            # refresh runs during setup — awaiting it left the whole entry
+            # stuck in setup_in_progress.
+            self._history_task = self.config_entry.async_create_background_task(
+                self.hass, self._async_sync_history_safe(), f"{DOMAIN} history sync"
+            )
 
         return data
+
+    async def _async_sync_history_safe(self) -> None:
+        """Run a history sync without letting failures escape."""
+        try:
+            await self.async_sync_history()
+        except UprightGo2Error as err:
+            _LOGGER.debug("History sync failed: %s", err)
+        except Exception:  # noqa: BLE001 - background task must not die silently
+            _LOGGER.exception("Unexpected error while syncing history")
 
     async def async_sync_history(self) -> None:
         """Download the stored history and fold it into totals and statistics."""
         client = self._get_client()
+        # Stamp first: a sync that fails should not be retried on every tick.
+        client.data.history_synced = dt_util.utcnow()
         intervals = await client.async_download_history()
         if not intervals:
             client.data.history_synced = dt_util.utcnow()
