@@ -12,12 +12,8 @@ import logging
 from datetime import timedelta
 
 from homeassistant.components import bluetooth
-from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData
-from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
-    get_last_statistics,
-)
+from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
@@ -31,8 +27,9 @@ from .const import (
     DEFAULT_HISTORY_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    PostureState,
 )
-from .history import hourly_totals, summarise
+from .history import LiveTracker, hourly_totals, merge_buckets, summarise
 
 try:  # HA 2025.11 replaced has_mean with mean_type
     from homeassistant.components.recorder.models import StatisticMeanType
@@ -70,13 +67,30 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         )
         self._slug = address.replace(":", "").lower()
         self._history_task: asyncio.Task[None] | None = None
+        self._live = LiveTracker()
+        self._offline_today: tuple[int, int] = (0, 0)
 
     def _handle_notification(self, data: UprightGo2Data) -> None:
         """Push a notification-driven update to the entities.
 
         Bleak may deliver this from a backend thread, so hop to the event loop.
         """
-        self.hass.loop.call_soon_threadsafe(self.async_set_updated_data, data)
+        self.hass.loop.call_soon_threadsafe(self._apply_notification, data)
+
+    def _apply_notification(self, data: UprightGo2Data) -> None:
+        """Bank live posture time, then publish the update."""
+        if data.posture is not None:
+            self._live.update(data.posture is PostureState.SLOUCH, dt_util.utcnow())
+            self._refresh_today(data)
+        self.async_set_updated_data(data)
+
+    def _refresh_today(self, data: UprightGo2Data) -> None:
+        """Recompute today's totals from stored history plus live time."""
+        timezone = dt_util.get_default_time_zone()
+        today = dt_util.now().date().isoformat()
+        live_slouch, live_upright = self._live.totals_for(today, timezone)
+        data.slouching_today = self._offline_today[0] + live_slouch
+        data.upright_today = self._offline_today[1] + live_upright
 
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
@@ -140,12 +154,23 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
 
         timezone = dt_util.get_default_time_zone()
         summary = summarise(intervals, timezone)
-        today = dt_util.now().date().isoformat()
-        client.data.slouching_today = summary.slouching.get(today, 0)
-        client.data.upright_today = summary.upright.get(today, 0)
+        now = dt_util.now()
+        today = now.date().isoformat()
+        yesterday = (now.date() - timedelta(days=1)).isoformat()
+        self._offline_today = (
+            summary.slouching.get(today, 0),
+            summary.upright.get(today, 0),
+        )
+        self._refresh_today(client.data)
+        client.data.slouching_yesterday = summary.slouching.get(yesterday, 0)
+        client.data.upright_yesterday = summary.upright.get(yesterday, 0)
+        client.data.history_days = len(summary.days)
         client.data.history_synced = dt_util.utcnow()
 
-        await self._async_write_statistics(hourly_totals(intervals, timezone))
+        self._live.prune(dt_util.utcnow() - timedelta(days=14))
+        await self._async_write_statistics(
+            merge_buckets(hourly_totals(intervals, timezone), self._live.buckets)
+        )
         self.async_set_updated_data(client.data)
         _LOGGER.debug(
             "Synced %d intervals covering %d day(s)", len(intervals), len(summary.days)
@@ -165,20 +190,16 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
             ("upright", 1, "Upright time"),
         ):
             statistic_id = f"{DOMAIN}:{self._slug}_{key}_seconds"
-            last = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
-            )
 
+            # Rewrite every bucket rather than appending only new ones. The
+            # whole device history is downloaded each time, so recomputing the
+            # cumulative sum from scratch backfills days Home Assistant never
+            # saw and corrects days an earlier partial download got wrong.
+            # Skipping anything older than the last stored hour would leave
+            # both of those permanently stale.
             total = 0.0
-            latest = None
-            if rows := (last or {}).get(statistic_id):
-                total = float(rows[0].get("sum") or 0.0)
-                latest = rows[0].get("start")
-
             stats: list[StatisticData] = []
             for hour in sorted(buckets):
-                if latest is not None and hour.timestamp() <= latest:
-                    continue
                 seconds = buckets[hour][position]
                 total += seconds
                 stats.append(StatisticData(start=hour, state=seconds, sum=total))

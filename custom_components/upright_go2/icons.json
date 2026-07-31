@@ -68,6 +68,15 @@
       },
       "history_synced": {
         "default": "mdi:database-clock-outline"
+      },
+      "slouching_yesterday": {
+        "default": "mdi:human-cane"
+      },
+      "upright_yesterday": {
+        "default": "mdi:human-handsup"
+      },
+      "history_days": {
+        "default": "mdi:calendar-range"
       }
     },
     "switch": {

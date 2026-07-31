@@ -174,21 +174,23 @@ def parse_stream(
 
 
 def decode_data_amount(payload: bytes) -> tuple[int | None, int | None]:
-    """Decode DATA_AMOUNT into (records, sessions).
+    """Decode DATA_AMOUNT into (bytes_pending, sessions).
 
-    Bytes 0-2 are the record count; byte 3 is the number of stored sessions,
-    which the app reads as expectedOfflineSessions.
+    Bytes 0-2 are a **byte** count, not a record count: the app compares it
+    against `currentAmount`, which it advances by 20 for every 20-byte packet
+    (`endOfExpected` is `currentAmount >= expectedAmount`). Byte 3 is the
+    number of stored sessions.
     """
     if len(payload) < 3:
         return None, None
-    records = payload[0] | (payload[1] << 8) | (payload[2] << 16)
+    pending = payload[0] | (payload[1] << 8) | (payload[2] << 16)
     sessions = payload[3] if len(payload) > 3 else None
-    return records, sessions
+    return pending, sessions
 
 
-def expected_stream_length(records: int, sessions: int | None) -> int:
-    """Estimate the dump size: one byte per record plus a header per session."""
-    return records + SESSION_HEADER_LENGTH * (sessions or 1)
+def expected_record_count(pending_bytes: int, sessions: int | None) -> int:
+    """Estimate how many interval records a dump of this size holds."""
+    return max(pending_bytes - SESSION_HEADER_LENGTH * (sessions or 0), 0)
 
 
 def detect_frequency(
@@ -234,6 +236,86 @@ def summarise(intervals: list[Interval], tzinfo: object = None) -> HistorySummar
         bucket = summary.slouching if interval.slouching else summary.upright
         bucket[day] = bucket.get(day, 0) + interval.duration
     return summary
+
+
+class LiveTracker:
+    """Accumulates posture time while Home Assistant is connected.
+
+    The device's stored history only covers stretches when nothing was
+    connected to it — with a live connection held open it records almost
+    nothing, so the on-device dump alone cannot add up to a full day. This
+    fills the connected stretches by timing how long each posture lasts.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing recorded."""
+        self.buckets: dict[datetime, list[int]] = {}
+        self._since: datetime | None = None
+        self._slouching: bool | None = None
+
+    def update(self, slouching: bool | None, now: datetime) -> None:
+        """Record the time spent since the last update and set the new state."""
+        if self._since is not None and self._slouching is not None:
+            self._credit(self._since, now, self._slouching)
+        self._since = now
+        self._slouching = slouching
+
+    def pause(self, now: datetime) -> None:
+        """Stop timing, e.g. when the link drops, without losing what is banked."""
+        if self._since is not None and self._slouching is not None:
+            self._credit(self._since, now, self._slouching)
+        self._since = None
+        self._slouching = None
+
+    def _credit(self, start: datetime, end: datetime, slouching: bool) -> None:
+        """Add a span to the hourly buckets, splitting it on hour boundaries."""
+        if end <= start:
+            return
+        # Ignore implausible gaps: a suspended host or a long disconnect should
+        # not land as hours of posture nobody was actually in.
+        if (end - start).total_seconds() > 3600:
+            return
+        position = 0 if slouching else 1
+        cursor = start
+        while cursor < end:
+            hour = cursor.replace(minute=0, second=0, microsecond=0)
+            boundary = hour + timedelta(hours=1)
+            chunk = min(end, boundary) - cursor
+            bucket = self.buckets.setdefault(hour, [0, 0])
+            bucket[position] += int(chunk.total_seconds())
+            cursor = min(end, boundary)
+
+    def totals_for(self, day: str, tzinfo: object = None) -> tuple[int, int]:
+        """Return (slouching, upright) seconds banked for a local day."""
+        slouch = upright = 0
+        for hour, (s, u) in self.buckets.items():
+            moment = hour.astimezone(tzinfo) if tzinfo else hour
+            if moment.date().isoformat() == day:
+                slouch += s
+                upright += u
+        return slouch, upright
+
+    def prune(self, before: datetime) -> None:
+        """Drop buckets older than the cutoff to keep memory bounded."""
+        for hour in [h for h in self.buckets if h < before]:
+            del self.buckets[hour]
+
+
+def merge_buckets(
+    offline: dict[datetime, tuple[int, int]],
+    live: dict[datetime, list[int]],
+) -> dict[datetime, tuple[int, int]]:
+    """Combine stored-history and live buckets, taking the larger of each.
+
+    The two sources should not overlap — the device only stores what happened
+    while disconnected — but taking the maximum keeps a partial overlap from
+    double-counting an hour.
+    """
+    merged: dict[datetime, tuple[int, int]] = dict(offline)
+    for hour, (slouch, upright) in live.items():
+        existing = merged.get(hour, (0, 0))
+        merged[hour] = (max(existing[0], slouch), max(existing[1], upright))
+    return merged
 
 
 def hourly_totals(

@@ -117,6 +117,15 @@
       },
       "history_synced": {
         "name": "History last synced"
+      },
+      "slouching_yesterday": {
+        "name": "Slouching yesterday"
+      },
+      "upright_yesterday": {
+        "name": "Upright yesterday"
+      },
+      "history_days": {
+        "name": "History days stored"
       }
     },
     "switch": {

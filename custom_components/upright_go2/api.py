@@ -68,7 +68,7 @@ from .history import (
     decode_data_amount,
     decode_session_timestamp,
     detect_frequency,
-    expected_stream_length,
+    expected_record_count,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,6 +111,9 @@ class UprightGo2Data:
     # Totals for the local day, from the device's stored history
     slouching_today: int | None = None
     upright_today: int | None = None
+    slouching_yesterday: int | None = None
+    upright_yesterday: int | None = None
+    history_days: int | None = None
     history_synced: datetime | None = None
 
     # Device information (read once)
@@ -503,10 +506,11 @@ class UprightGo2Client:
     async def async_download_history(self, timeout: float = 90.0) -> list[Interval]:
         """Download the stored posture history and parse it.
 
-        The device streams packets on OFFLINE_DATA; each one has to be
-        acknowledged with SEND_NEXT before the next arrives. The dump ends at
-        the 0xFF marker. Nothing is deleted from the device here — clearing the
-        history is a separate, deliberate action.
+        The device streams the whole dump on OFFLINE_DATA by itself once the
+        transfer starts; DATA_AMOUNT says how many bytes to expect. Note this
+        only covers stretches when nothing was connected — the device records
+        to flash while offline, so with a live connection held open there is
+        very little here. Nothing is deleted from the device.
         """
         if not self.connected:
             await self.async_connect()
@@ -523,20 +527,16 @@ class UprightGo2Client:
                 if device_now:
                     clock_offset = time.time() - device_now
 
-            records: int | None = None
+            pending: int | None = None
             sessions: int | None = None
             if amount := await self._read(CHAR_DATA_AMOUNT):
-                records, sessions = decode_data_amount(amount)
+                pending, sessions = decode_data_amount(amount)
 
             # Drive the download by how many bytes the device says it holds
             # rather than by an end marker. Framing is ambiguous until the
             # whole dump is in hand, so a marker spotted mid-stream may not be
             # one — that is what cut earlier downloads short.
-            wanted = (
-                expected_stream_length(records, sessions)
-                if records is not None
-                else None
-            )
+            wanted = pending
 
             buffer = bytearray()
             finished = asyncio.Event()
@@ -551,28 +551,12 @@ class UprightGo2Client:
                 buffer.extend(payload)
                 packet_seen.set()
 
+                # The device streams the whole dump by itself once started —
+                # the app never writes SEND_NEXT, it only counts bytes until it
+                # has as many as DATA_AMOUNT reported. Acknowledging each packet
+                # is not part of the protocol and appeared to stall the stream.
                 if not payload or (wanted is not None and len(buffer) >= wanted):
                     finished.set()
-                    return
-
-                # Ask for the next packet; the device will not send unprompted.
-                task = asyncio.create_task(
-                    self._client.write_gatt_char(  # type: ignore[union-attr]
-                        CHAR_DATA_COMMAND,
-                        bytes([DataTransferCommand.SEND_NEXT]),
-                        response=True,
-                    )
-                )
-
-                def _check(done: asyncio.Task[None]) -> None:
-                    nonlocal failure
-                    if done.cancelled():
-                        return
-                    if (err := done.exception()) is not None:
-                        failure = err
-                        finished.set()
-
-                task.add_done_callback(_check)
 
             try:
                 await self._client.start_notify(CHAR_OFFLINE_DATA, on_packet)
@@ -627,19 +611,25 @@ class UprightGo2Client:
             if failure is not None and not buffer:
                 raise UprightGo2Error(f"History download failed: {failure}")
 
-            frequency, intervals = detect_frequency(bytes(buffer), records)
+            expected = (
+                expected_record_count(pending, sessions)
+                if pending is not None
+                else None
+            )
+            frequency, _ = detect_frequency(bytes(buffer), expected)
 
             # Re-frame with the detected nibble so the timestamps are anchored.
             framer = StreamFramer(frequency, clock_offset)
             framer.feed(bytes(buffer))
 
             _LOGGER.debug(
-                "History: %d packets, %d bytes (device reported %s records in %s"
-                " sessions); framed %d records with header nibble %s",
+                "History: %d packets, %d of ~%s bytes (%s sessions, ~%s records"
+                " expected); framed %d records with header nibble %s",
                 packets,
                 len(buffer),
-                records,
+                pending,
                 sessions,
+                expected,
                 len(framer.intervals),
                 frequency,
             )
