@@ -38,6 +38,8 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 SAVE_DELAY = 30
+# The device pushes the angle many times a second; publish at most this often.
+MIN_PUSH_INTERVAL = 1.0
 
 type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 
@@ -73,6 +75,8 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         self._slouching = 0.0
         self._upright = 0.0
         self._counted_until: datetime | None = None
+        self._last_push: datetime | None = None
+        self._last_posture: PostureState | None = None
 
     async def async_load(self) -> None:
         """Restore the counters so a restart does not reset them to zero."""
@@ -132,9 +136,25 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         self.hass.loop.call_soon_threadsafe(self._apply_notification, data)
 
     def _apply_notification(self, data: UprightGo2Data) -> None:
-        """Bank live posture time, then publish the update."""
-        self._tick(data, dt_util.utcnow())
-        self.async_set_updated_data(data)
+        """Bank live posture time, then publish the update.
+
+        The device pushes the angle many times a second. Publishing every one
+        wrote tens of thousands of rows an hour to the recorder, which lagged
+        statistics and made the dashboard stutter — so the state machine is
+        updated at most once a second. A change of posture always goes through
+        immediately, because that is the moment worth reacting to. Timing is
+        unaffected: the clock is ticked on every notification either way.
+        """
+        now = dt_util.utcnow()
+        self._tick(data, now)
+
+        posture_changed = data.posture is not self._last_posture
+        self._last_posture = data.posture
+
+        elapsed = (now - self._last_push).total_seconds() if self._last_push else None
+        if posture_changed or elapsed is None or elapsed >= MIN_PUSH_INTERVAL:
+            self._last_push = now
+            self.async_set_updated_data(data)
 
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
