@@ -82,6 +82,13 @@
           "medium": "Medium",
           "strong": "Strong"
         }
+      },
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "posture": "Posture",
+          "msk": "MSK"
+        }
       }
     },
     "sensor": {
@@ -96,6 +103,14 @@
       },
       "upright_time": {
         "name": "Upright time"
+      },
+      "movement": {
+        "name": "Movement",
+        "state": {
+          "idle": "Still",
+          "moving": "Moving",
+          "unknown": "Unknown"
+        }
       }
     },
     "switch": {

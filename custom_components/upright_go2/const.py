@@ -129,6 +129,32 @@ HEADER_CLEAN_NIBBLE: Final = 0x7
 HEADER_DIRTY_NIBBLE: Final = 0xF
 
 
+class ConnectionMode(IntEnum):
+    """Which programme the device is running, from GENERAL_SETTING byte 3.
+
+    The app calls these switchToPostureSettings / switchToMSKSettings and tells
+    them apart by comparing that byte against COMPATIBILITY_MODE_MSK.
+    """
+
+    LAST = 0
+    POSTURE = 1
+    MSK = 2
+
+
+# Values actually written to GENERAL_SETTING byte 3 for each mode.
+OFFSET_COMPATIBILITY: Final = 3
+COMPATIBILITY_MODE_POSTURE: Final = 1
+COMPATIBILITY_MODE_MSK: Final = 3
+
+
+class MovementStatus(IntEnum):
+    """Bits 5-4 of an interval record, as the app's MovementStatus."""
+
+    IDLE = 0
+    MOVING = 1
+    UNKNOWN = 2
+
+
 class PostureState(IntEnum):
     """Value of POSTURE_STATUS."""
 

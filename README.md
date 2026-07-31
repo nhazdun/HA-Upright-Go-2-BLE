@@ -15,6 +15,8 @@ directly to the device's GATT services.
 | Charging | binary sensor | `battery_charging` device class |
 | Slouching | binary sensor | |
 | Posture angle | sensor | degrees, one decimal |
+| Movement | sensor | still / moving, from the live interval stream |
+| Mode | select | posture / MSK programme |
 | Vibration | switch | slouch buzz on/off |
 | Vibration pattern | select | 9 patterns |
 | Vibration strength | select | gentle / medium / strong |
@@ -79,6 +81,21 @@ calibrate: button.upright_go_2_calibrate
 upright_angle: 35
 slouch_angle: 75
 ```
+
+## Modes
+
+**Mode** switches the device between its two programmes, the same pair the app
+offers: **Posture** and **MSK**. It is byte 3 of the device's general settings —
+the app calls these switchToPostureSettings and switchToMSKSettings and tells
+them apart by that byte. Only that byte is written here, so your delay,
+pattern and sensitivity survive the switch.
+
+**Movement** is a separate thing: the device streams live interval records on
+its ONLINE_DATA characteristic, and bits 5-4 of each carry the movement state
+the app renders as sitting versus moving. It is reported as *still* or *moving*.
+
+Training versus tracking is not a device mode — in the app it is just whether
+the buzz is on, which is the **Vibration** switch.
 
 ## Recorder load
 

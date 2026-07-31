@@ -26,6 +26,7 @@ from .const import (
     CHAR_HAL_CONTROL,
     CHAR_HW_VERSION,
     CHAR_OFFLINE_DATA,
+    CHAR_ONLINE_DATA,
     CHAR_POSTURE_STATUS,
     CHAR_POWER_DATA_FIRST,
     CHAR_POWER_DATA_SECOND,
@@ -54,9 +55,14 @@ from .const import (
     OFFSET_VIB_STRENGTH,
     RESET_REASONS,
     SHUTDOWN_REASONS,
+    COMPATIBILITY_MODE_MSK,
+    COMPATIBILITY_MODE_POSTURE,
+    OFFSET_COMPATIBILITY,
     CalibrationCommand,
     ChargingState,
+    ConnectionMode,
     DataTransferCommand,
+    MovementStatus,
     HalControlCommand,
     PostureState,
     VibrationMode,
@@ -96,6 +102,8 @@ class UprightGo2Data:
     posture: PostureState | None = None
     angle: float | None = None
     vibration_on: bool | None = None
+    movement: MovementStatus | None = None
+    mode: ConnectionMode | None = None
     errors: list[str] = field(default_factory=list)
     malfunction: bool | None = None
     shutdown_reason: str | None = None
@@ -279,6 +287,7 @@ class UprightGo2Client:
             (CHAR_POSTURE_STATUS, self._handle_posture),
             (CHAR_SMOOTH_ANGLE, self._handle_angle),
             (CHAR_VIBRATION_STATUS, self._handle_vibration),
+            (CHAR_ONLINE_DATA, self._handle_online),
         ):
             try:
                 await self._client.start_notify(uuid, handler)
@@ -326,6 +335,25 @@ class UprightGo2Client:
         if (angle := decode_angle(bytes(payload))) is None:
             return
         self.data.angle = angle
+        self._publish()
+
+    def _handle_online(
+        self, _char: BleakGATTCharacteristic, payload: bytearray
+    ) -> None:
+        """Decode a live interval record.
+
+        ONLINE_DATA carries the same one-byte records as the stored history, so
+        bits 5-4 give the movement state the app shows as sitting vs moving.
+        """
+        if not payload:
+            return
+        try:
+            movement = MovementStatus((payload[0] >> 4) & 0x03)
+        except ValueError:
+            return
+        if movement is self.data.movement:
+            return
+        self.data.movement = movement
         self._publish()
 
     def _handle_vibration(
@@ -414,6 +442,15 @@ class UprightGo2Client:
 
             if data.angle is None and (angle := await self._read(CHAR_SMOOTH_ANGLE)):
                 data.angle = decode_angle(angle)
+
+            if (general := await self._read(CHAR_GENERAL_SETTING)) and len(
+                general
+            ) > OFFSET_COMPATIBILITY:
+                data.mode = (
+                    ConnectionMode.MSK
+                    if general[OFFSET_COMPATIBILITY] == COMPATIBILITY_MODE_MSK
+                    else ConnectionMode.POSTURE
+                )
 
             if vibration := await self._read(CHAR_VIBRATION_STATUS):
                 data.vibration_on = vibration[0] == VibrationMode.ON
@@ -638,6 +675,38 @@ class UprightGo2Client:
         await self._async_write(
             CHAR_DATA_COMMAND, bytes([DataTransferCommand.DELETE_DATA])
         )
+
+    async def async_set_mode(self, mode: ConnectionMode) -> None:
+        """Switch the device between the posture and MSK programmes.
+
+        The app writes a whole settings preset for this; only the byte that
+        distinguishes the two is touched here, so the wearer's own delay,
+        pattern and sensitivity survive the switch.
+        """
+        if not self.connected:
+            await self.async_connect()
+
+        async with self._lock:
+            if self._client is None:
+                raise UprightGo2Error("Not connected")
+
+            current = await self._read(CHAR_GENERAL_SETTING)
+            if not current or len(current) <= OFFSET_COMPATIBILITY:
+                raise UprightGo2Error("Device did not return general settings")
+
+            payload = bytearray(current)
+            payload[OFFSET_COMPATIBILITY] = (
+                COMPATIBILITY_MODE_MSK
+                if mode is ConnectionMode.MSK
+                else COMPATIBILITY_MODE_POSTURE
+            )
+            try:
+                await self._client.write_gatt_char(
+                    CHAR_GENERAL_SETTING, bytes(payload), response=True
+                )
+            except (BleakError, TimeoutError) as err:
+                raise UprightGo2Error(f"Could not switch mode: {err}") from err
+            self.data.mode = mode
 
     async def async_update_freestyle(self, **changes: int) -> None:
         """Read the freestyle block, apply changes, and write it back.

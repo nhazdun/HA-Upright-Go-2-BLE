@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import UprightGo2Data
+from .const import MovementStatus
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
 from .entity import UprightGo2Entity
 
@@ -44,6 +45,17 @@ SENSORS: tuple[UprightGo2SensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_fn=lambda data: data.angle,
+    ),
+    UprightGo2SensorDescription(
+        key="movement",
+        translation_key="movement",
+        device_class=SensorDeviceClass.ENUM,
+        options=["idle", "moving", "unknown"],
+        value_fn=(
+            lambda data: data.movement.name.lower()
+            if data.movement is not None
+            else None
+        ),
     ),
     UprightGo2SensorDescription(
         key="slouching_time",

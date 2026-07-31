@@ -39,6 +39,9 @@
       },
       "vibration_strength": {
         "default": "mdi:signal-cellular-3"
+      },
+      "mode": {
+        "default": "mdi:tune-variant"
       }
     },
     "sensor": {
@@ -53,6 +56,12 @@
       },
       "upright_time": {
         "default": "mdi:human-handsup"
+      },
+      "movement": {
+        "default": "mdi:walk",
+        "state": {
+          "idle": "mdi:seat-passenger"
+        }
       }
     },
     "switch": {

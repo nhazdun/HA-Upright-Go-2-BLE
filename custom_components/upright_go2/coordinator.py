@@ -30,6 +30,7 @@ from .const import (
     DEFAULT_HISTORY_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    ConnectionMode,
     PostureState,
 )
 from .history import PostureClock, history_since
@@ -292,6 +293,8 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
                 case "sync_history":
                     await self.async_sync_history()
                     return
+                case "set_mode":
+                    await client.async_set_mode(ConnectionMode(kwargs["mode"]))
                 case "clear_history":
                     await client.async_clear_history()
                 case _:
