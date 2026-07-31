@@ -90,6 +90,13 @@ until it is released. Disable the integration entry if you need the app.
   slouch (1–6). Lower it if it feels too forgiving.
 - The *Vibration* switch must be on.
 
+## Brand images
+
+The integration ships its own icon in `custom_components/upright_go2/brand/`,
+which Home Assistant 2026.3+ serves directly — no submission to
+[home-assistant/brands](https://github.com/home-assistant/brands) required.
+See the [brands proxy API announcement](https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/).
+
 ## Protocol
 
 The BLE protocol was reverse-engineered from the official Android app and is
