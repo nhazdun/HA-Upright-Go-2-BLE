@@ -147,7 +147,14 @@ GO_RANGE_MIN: Final = 1
 GO_RANGE_MAX: Final = 6
 GO_RANGE_DEFAULT: Final = 5
 
-# Bit positions in the ERRORS characteristic (GoDeviceErrorStatus).
+# ERRORS characteristic layout.
+OFFSET_ERROR_CODE: Final = 0  # two bytes, little-endian bitmask
+OFFSET_MALFUNCTION: Final = 4
+OFFSET_SHUTDOWN_REASON: Final = 5
+OFFSET_RESET_REASON_LOW: Final = 7
+OFFSET_RESET_REASON_HIGH: Final = 9
+
+# Bit positions within the two error-code bytes (GoDeviceErrorStatus).
 DEVICE_ERRORS: Final = (
     "no_magnometer",
     "memory_failure",
@@ -162,4 +169,32 @@ DEVICE_ERRORS: Final = (
     "flash_reload_values_failure",
     "soft_reset_due_to_button_press",
     "no_sensor_is_detected",
+)
+
+# Index into SHUTDOWN_REASONS (a plain value, not a bitmask).
+SHUTDOWN_REASONS: Final = (
+    "regular_off",
+    "is_active",
+    "softreset",
+    "empty_battery",
+    "bootloader",
+    "deepsleep",
+    "fw_update_with_bulk_erase",
+    "fw_update_without_bulk_erase",
+    "fw_unattached",
+    "fw_uncalibrated",
+)
+
+# Bit positions across the two reset-reason bytes. These mirror the nRF
+# RESETREAS register, whose upper causes live in bits 16-19 — which is why the
+# app reads byte 7 and byte 9 rather than two adjacent bytes.
+RESET_REASONS: Final = (
+    "pin_reset_detected",
+    "watchdog_detected",
+    "soft_reset_detected",
+    "cpu_lock_up_detected",
+    "detect_signal_from_gpio",
+    "anadetect_signal_from_lpcomp",
+    "entering_into_debug_interface_mode",
+    "nfc_field_detect",
 )

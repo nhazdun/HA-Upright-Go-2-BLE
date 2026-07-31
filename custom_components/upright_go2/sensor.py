@@ -28,6 +28,7 @@ class UprightGo2SensorDescription(SensorEntityDescription):
     """Describes an Upright GO 2 sensor."""
 
     value_fn: Callable[[UprightGo2Data], str | int | float | None]
+    attrs_fn: Callable[[UprightGo2Data], dict[str, object]] | None = None
 
 
 SENSORS: tuple[UprightGo2SensorDescription, ...] = (
@@ -75,6 +76,12 @@ SENSORS: tuple[UprightGo2SensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda data: ", ".join(data.errors) if data.errors else "none",
+        attrs_fn=lambda data: {
+            "errors": data.errors,
+            "malfunction": data.malfunction,
+            "shutdown_reason": data.shutdown_reason,
+            "reset_reasons": data.reset_reasons,
+        },
     ),
 )
 
@@ -109,3 +116,10 @@ class UprightGo2Sensor(UprightGo2Entity, SensorEntity):
     def native_value(self) -> str | int | float | None:
         """Return the current value."""
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return any extra detail this sensor carries."""
+        if (attrs_fn := self.entity_description.attrs_fn) is None:
+            return None
+        return attrs_fn(self.coordinator.data)

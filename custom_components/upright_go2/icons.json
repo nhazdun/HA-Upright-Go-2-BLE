@@ -1,0 +1,64 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "slouching": {
+        "default": "mdi:human-cane",
+        "state": {
+          "off": "mdi:human-handsup"
+        }
+      }
+    },
+    "button": {
+      "calibrate": {
+        "default": "mdi:crosshairs-gps"
+      },
+      "clear_calibration": {
+        "default": "mdi:crosshairs-off"
+      },
+      "deep_sleep": {
+        "default": "mdi:sleep"
+      }
+    },
+    "number": {
+      "delay": {
+        "default": "mdi:timer-outline"
+      },
+      "sensitivity": {
+        "default": "mdi:angle-acute"
+      }
+    },
+    "select": {
+      "vibration_pattern": {
+        "default": "mdi:vibrate"
+      },
+      "vibration_strength": {
+        "default": "mdi:signal-cellular-3"
+      }
+    },
+    "sensor": {
+      "angle": {
+        "default": "mdi:angle-acute"
+      },
+      "charging_state": {
+        "default": "mdi:battery-charging"
+      },
+      "errors": {
+        "default": "mdi:alert-circle-outline"
+      },
+      "posture": {
+        "default": "mdi:human-handsup",
+        "state": {
+          "slouch": "mdi:human-cane"
+        }
+      }
+    },
+    "switch": {
+      "vibration": {
+        "default": "mdi:vibrate",
+        "state": {
+          "off": "mdi:vibrate-off"
+        }
+      }
+    }
+  }
+}

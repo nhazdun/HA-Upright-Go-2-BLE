@@ -35,10 +35,17 @@ from .const import (
     OFFSET_CHARGING_STATE,
     OFFSET_DELAY_HIGH,
     OFFSET_DELAY_LOW,
+    OFFSET_ERROR_CODE,
+    OFFSET_MALFUNCTION,
     OFFSET_RANGE,
+    OFFSET_RESET_REASON_HIGH,
+    OFFSET_RESET_REASON_LOW,
+    OFFSET_SHUTDOWN_REASON,
     OFFSET_STOP_PERIODS,
     OFFSET_VIB_PATTERN,
     OFFSET_VIB_STRENGTH,
+    RESET_REASONS,
+    SHUTDOWN_REASONS,
     CalibrationCommand,
     ChargingState,
     HalControlCommand,
@@ -66,6 +73,9 @@ class UprightGo2Data:
     angle: float | None = None
     vibration_on: bool | None = None
     errors: list[str] = field(default_factory=list)
+    malfunction: bool | None = None
+    shutdown_reason: str | None = None
+    reset_reasons: list[str] = field(default_factory=list)
 
     # Freestyle settings
     sensitivity_range: int | None = None
@@ -87,12 +97,44 @@ def decode_angle(payload: bytes) -> float | None:
     return struct.unpack_from("<h", payload, 0)[0] / 10
 
 
-def decode_errors(payload: bytes) -> list[str]:
-    """Decode the ERRORS characteristic into a list of active error names."""
-    if not payload:
-        return []
-    bits = int.from_bytes(payload, "little")
-    return [name for index, name in enumerate(DEVICE_ERRORS) if bits & (1 << index)]
+def _decode_bitmask(value: int, names: tuple[str, ...]) -> list[str]:
+    """Return the names whose bit is set, LSB first."""
+    return [name for index, name in enumerate(names) if value & (1 << index)]
+
+
+def decode_errors(payload: bytes) -> tuple[list[str], bool | None, str | None, list[str]]:
+    """Decode the ERRORS characteristic.
+
+    Returns the active errors, the malfunction flag, the shutdown reason and
+    the active reset reasons. Each field sits at its own offset — the error
+    bitmask is only the first two bytes, not the whole payload.
+    """
+    errors: list[str] = []
+    malfunction: bool | None = None
+    shutdown: str | None = None
+    resets: list[str] = []
+
+    if len(payload) > OFFSET_ERROR_CODE + 1:
+        code = int.from_bytes(
+            payload[OFFSET_ERROR_CODE : OFFSET_ERROR_CODE + 2], "little"
+        )
+        errors = _decode_bitmask(code, DEVICE_ERRORS)
+
+    if len(payload) > OFFSET_MALFUNCTION:
+        malfunction = bool(payload[OFFSET_MALFUNCTION])
+
+    if len(payload) > OFFSET_SHUTDOWN_REASON:
+        index = payload[OFFSET_SHUTDOWN_REASON]
+        if index < len(SHUTDOWN_REASONS):
+            shutdown = SHUTDOWN_REASONS[index]
+
+    if len(payload) > OFFSET_RESET_REASON_HIGH:
+        raw = payload[OFFSET_RESET_REASON_LOW] | (
+            payload[OFFSET_RESET_REASON_HIGH] << 8
+        )
+        resets = _decode_bitmask(raw, RESET_REASONS)
+
+    return errors, malfunction, shutdown, resets
 
 
 class UprightGo2Client:
@@ -184,7 +226,12 @@ class UprightGo2Client:
             data.vibration_on = vibration[0] == VibrationMode.ON
 
         if errors := await self._read(client, CHAR_ERRORS):
-            data.errors = decode_errors(errors)
+            (
+                data.errors,
+                data.malfunction,
+                data.shutdown_reason,
+                data.reset_reasons,
+            ) = decode_errors(errors)
 
         if (freestyle := await self._read(client, CHAR_FREESTYLE_SETTING)) and len(
             freestyle

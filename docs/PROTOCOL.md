@@ -116,7 +116,26 @@ DELAY_MULTIPLIER         = 10
 
 ### `bad3` ERRORS — read
 
-Bit/index positions of `GoDeviceErrorStatus`:
+`byteArrayToErrorData` splits this into four independent fields:
+
+| Offset | Field            | Encoding                          |
+|--------|------------------|-----------------------------------|
+| 0–1    | `errorCode`      | bitmask over `GoDeviceErrorStatus`|
+| 4      | `malfunction`    | boolean (`!!byte`)                |
+| 5      | `shutdownReason` | index into `ShutdownReason`       |
+| 7, 9   | `resetReason`    | bitmask over `ResetReason`        |
+
+The bitmask helper is `parseErrors(bytes, enum)`, which maps each byte through
+`Number.prototype.toBites()`:
+
+```js
+toBites() { return this.toString(2).padStart(8, '0').split('').reverse().join('') }
+```
+
+so bits are **LSB first** and bytes are concatenated in order — equivalent to
+`int.from_bytes(payload, "little")` with bit *n* selecting `enum[n]`.
+
+`GoDeviceErrorStatus` bit positions:
 
 ```
 0  no_magnometer                   7  shutdown_due_to_button_press
@@ -127,6 +146,10 @@ Bit/index positions of `GoDeviceErrorStatus`:
 5  wrong_battery                  12  no_sensor_is_detected
 6  shutdown_in_one_minute
 ```
+
+`resetReason` reads byte 7 as bits 0–7 and byte 9 as bits 8–15. That mirrors the
+nRF `RESETREAS` register, whose upper causes sit in hardware bits 16–19 — hence
+the two non-adjacent bytes rather than a 16-bit little-endian pair.
 
 ### `bad4` HAL_CONTROL — write single byte
 
