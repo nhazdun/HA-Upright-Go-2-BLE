@@ -59,6 +59,9 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 20.0
+
+# 0xFF is the app's IGNORE_VALUE; C3 BF is that byte after a UTF-8 round trip.
+_FILLER_BYTES = frozenset({0x00, 0xFF, 0xC3, 0xBF})
 RECONNECT_MIN_DELAY = 5
 RECONNECT_MAX_DELAY = 120
 
@@ -338,14 +341,11 @@ class UprightGo2Client:
         if not trimmed:
             return None
 
-        # Some units ship with the serial never programmed: the field is all
-        # 0xFF, sometimes UTF-8 encoded so it arrives as runs of C3 BF. That is
-        # an absent value, not an identifier worth showing.
-        try:
-            decoded = trimmed.decode("utf-8")
-        except UnicodeDecodeError:
-            decoded = None
-        if decoded is not None and not decoded.strip("ÿ\x00").strip():
+        # Some units ship with the serial never programmed. The field is 0xFF,
+        # partly UTF-8 encoded so it arrives as runs of C3 BF — and not always
+        # aligned, so it will not decode cleanly. If nothing but those filler
+        # bytes is left, the value is absent rather than an identifier.
+        if not (set(trimmed) - _FILLER_BYTES):
             return None
 
         if all(0x20 <= byte < 0x7F for byte in trimmed):
