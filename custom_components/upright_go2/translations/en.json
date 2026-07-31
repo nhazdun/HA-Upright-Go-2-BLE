@@ -1,0 +1,109 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "confirm": {
+        "description": "Add {name} ({address})?\n\nThe device must stay in range of a connectable Bluetooth adapter or ESPHome BLE proxy."
+      },
+      "user": {
+        "data": {
+          "address": "Device"
+        },
+        "description": "Pick the Upright GO 2 to add."
+      }
+    },
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "no_devices_found": "No Upright GO 2 found. Wake the device by moving it, and make sure it is in range of a Bluetooth adapter or proxy.",
+      "not_supported": "This device is not an Upright GO 2."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_interval": "Polling interval"
+        },
+        "description": "How often to connect and read the device. Each poll briefly occupies the device's single Bluetooth connection slot, so the phone app cannot connect at the same moment. Longer intervals save battery."
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "slouching": {
+        "name": "Slouching"
+      }
+    },
+    "button": {
+      "calibrate": {
+        "name": "Calibrate"
+      },
+      "clear_calibration": {
+        "name": "Clear calibration"
+      },
+      "deep_sleep": {
+        "name": "Deep sleep"
+      }
+    },
+    "number": {
+      "delay": {
+        "name": "Vibration delay"
+      },
+      "sensitivity": {
+        "name": "Posture sensitivity"
+      }
+    },
+    "select": {
+      "vibration_pattern": {
+        "name": "Vibration pattern",
+        "state": {
+          "long": "Long",
+          "medium": "Medium",
+          "short": "Short",
+          "rumpup": "Ramp up",
+          "knock": "Knock",
+          "heartbeat": "Heartbeat",
+          "tuk_tuk": "Tuk tuk",
+          "ecstatic": "Ecstatic",
+          "muzzle": "Muzzle"
+        }
+      },
+      "vibration_strength": {
+        "name": "Vibration strength",
+        "state": {
+          "gentle": "Gentle",
+          "medium": "Medium",
+          "strong": "Strong"
+        }
+      }
+    },
+    "sensor": {
+      "angle": {
+        "name": "Posture angle"
+      },
+      "charging_state": {
+        "name": "Charging state",
+        "state": {
+          "disconnected": "Not charging",
+          "charging": "Charging",
+          "charged": "Fully charged"
+        }
+      },
+      "errors": {
+        "name": "Device errors"
+      },
+      "posture": {
+        "name": "Posture",
+        "state": {
+          "straight": "Straight",
+          "slouch": "Slouching"
+        }
+      }
+    },
+    "switch": {
+      "vibration": {
+        "name": "Vibration"
+      }
+    }
+  }
+}

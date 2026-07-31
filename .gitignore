@@ -1,0 +1,9 @@
+# Decompiled app used only to derive the protocol — not redistributable.
+android/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.DS_Store
