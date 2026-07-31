@@ -143,11 +143,11 @@ class UprightGo2Card extends HTMLElement {
         svg { width: 100%; height: 100%; max-height: 320px; overflow: visible; }
         .ring-track { stroke: var(--divider-color, #e3e3e3); }
         .ring {
-          transition: stroke-dashoffset .8s linear, stroke .25s ease;
+          transition: stroke-dashoffset .5s linear, stroke .2s ease;
           stroke-linecap: round;
         }
         #figure {
-          transition: transform .8s linear;
+          transition: transform .5s linear;
           transform-origin: 100px 168px;
           will-change: transform;
         }

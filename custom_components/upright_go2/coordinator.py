@@ -38,8 +38,12 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 SAVE_DELAY = 30
-# The device pushes the angle many times a second; publish at most this often.
-MIN_PUSH_INTERVAL = 1.0
+# The device pushes the angle ~15 times a second. Publishing all of it floods
+# the recorder; publishing once a second makes the figure visibly lag. Half a
+# second is the compromise: motion still reads as live, and the write rate is
+# ~7x lower than the device's. See the README for excluding the angle sensor
+# from the recorder if database size matters more than its history.
+MIN_PUSH_INTERVAL = 0.5
 
 type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 

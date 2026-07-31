@@ -80,6 +80,23 @@ upright_angle: 35
 slouch_angle: 75
 ```
 
+## Recorder load
+
+The angle characteristic notifies about 15 times a second. Recording all of it
+writes tens of thousands of rows an hour, so updates are published twice a
+second — fast enough that the card still reads as live.
+
+If database size matters more than the angle's history, exclude just that
+sensor and the write rate drops to almost nothing while everything else keeps
+working:
+
+```yaml
+recorder:
+  exclude:
+    entities:
+      - sensor.upright_go_2_posture_angle
+```
+
 ## Protocol
 
 The BLE protocol was reverse-engineered from the official Android app and is
