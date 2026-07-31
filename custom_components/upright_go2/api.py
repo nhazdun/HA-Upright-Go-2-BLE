@@ -334,9 +334,20 @@ class UprightGo2Client:
         """
         if not payload:
             return None
-        trimmed = payload.rstrip(b"\xff\x00")
+        trimmed = payload.strip(b"\xff\x00")
         if not trimmed:
             return None
+
+        # Some units ship with the serial never programmed: the field is all
+        # 0xFF, sometimes UTF-8 encoded so it arrives as runs of C3 BF. That is
+        # an absent value, not an identifier worth showing.
+        try:
+            decoded = trimmed.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded = None
+        if decoded is not None and not decoded.strip("ÿ\x00").strip():
+            return None
+
         if all(0x20 <= byte < 0x7F for byte in trimmed):
             return trimmed.decode("ascii").strip() or None
         return trimmed.hex().upper()
