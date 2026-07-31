@@ -34,6 +34,19 @@ BUTTONS: tuple[UprightGo2ButtonDescription, ...] = (
         action="clear_calibration",
     ),
     UprightGo2ButtonDescription(
+        key="sync_history",
+        translation_key="sync_history",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        action="sync_history",
+    ),
+    UprightGo2ButtonDescription(
+        key="clear_history",
+        translation_key="clear_history",
+        entity_category=EntityCategory.CONFIG,
+        entity_registry_enabled_default=False,
+        action="clear_history",
+    ),
+    UprightGo2ButtonDescription(
         key="deep_sleep",
         translation_key="deep_sleep",
         entity_category=EntityCategory.CONFIG,

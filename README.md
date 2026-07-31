@@ -25,9 +25,40 @@ directly to the device's GATT services.
 | Vibration strength | select | gentle / medium / strong |
 | Posture sensitivity | number | 1–6 |
 | Vibration delay | number | seconds before the buzz |
+| Slouching today | sensor | minutes spent slouching, from stored history |
+| Upright today | sensor | minutes spent upright |
+| History last synced | sensor | diagnostic |
 | Calibrate | button | sets the current pose as upright |
+| Sync history | button | pull stored history now |
+| Clear history | button | erases on-device history, disabled by default |
 | Clear calibration | button | disabled by default |
 | Deep sleep | button | disabled by default |
+
+## Daily history
+
+The GO 2 records posture continuously and keeps it on-board, so the day's
+totals are **not** limited to the time Home Assistant was connected. On each
+sync the integration downloads that stored history and writes it to the
+recorder as long-term statistics with real timestamps, which means a day is
+complete even if Bluetooth was out of range for most of it.
+
+Two statistics are produced:
+
+```
+upright_go2:<address>_slouching_seconds
+upright_go2:<address>_upright_seconds
+```
+
+Add them to a **Statistics** card and pick a daily period to get the per-day
+breakdown. The *Slouching today* and *Upright today* sensors carry the same
+numbers for the current day.
+
+History syncs hourly by default (configurable, 10 min – 24 h) and can be
+triggered with the *Sync history* button. Nothing is deleted from the device
+unless you press *Clear history*, which is disabled by default.
+
+Resolution is the device's own recording interval — 10 s out of the box, which
+is the `dataInterval` field in its general settings.
 
 Serial number, firmware and hardware revision are attached to the device entry.
 

@@ -22,7 +22,8 @@
     "step": {
       "init": {
         "data": {
-          "scan_interval": "Polling interval"
+          "scan_interval": "Polling interval",
+          "history_interval": "History sync interval"
         },
         "description": "How often to re-read battery, settings and errors. Posture and angle are not polled — they stream over BLE notifications. The connection is held open, so the phone app cannot connect while Home Assistant is attached."
       }
@@ -46,6 +47,12 @@
       },
       "deep_sleep": {
         "name": "Deep sleep"
+      },
+      "sync_history": {
+        "name": "Sync history"
+      },
+      "clear_history": {
+        "name": "Clear history"
       }
     },
     "number": {
@@ -101,6 +108,15 @@
           "straight": "Straight",
           "slouch": "Slouching"
         }
+      },
+      "slouching_today": {
+        "name": "Slouching today"
+      },
+      "upright_today": {
+        "name": "Upright today"
+      },
+      "history_synced": {
+        "name": "History last synced"
       }
     },
     "switch": {

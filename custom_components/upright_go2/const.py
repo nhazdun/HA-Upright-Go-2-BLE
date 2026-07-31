@@ -17,6 +17,11 @@ DEFAULT_SCAN_INTERVAL: Final = 300
 MIN_SCAN_INTERVAL: Final = 60
 MAX_SCAN_INTERVAL: Final = 3600
 
+CONF_HISTORY_INTERVAL: Final = "history_interval"
+DEFAULT_HISTORY_INTERVAL: Final = 3600
+MIN_HISTORY_INTERVAL: Final = 600
+MAX_HISTORY_INTERVAL: Final = 86400
+
 MANUFACTURER: Final = "Upright Technologies"
 MODEL: Final = "GO 2"
 
@@ -59,6 +64,13 @@ CHAR_POWER_DATA_SECOND: Final = short_uuid("bad2")
 CHAR_ERRORS: Final = short_uuid("bad3")
 CHAR_HAL_CONTROL: Final = short_uuid("bad4")
 
+CHAR_DATA_AMOUNT: Final = short_uuid("baa1")
+CHAR_DATA_COMMAND: Final = short_uuid("baa2")
+CHAR_PACKET_NUMBER: Final = short_uuid("baa3")
+CHAR_OFFLINE_DATA: Final = short_uuid("baa4")
+CHAR_ONLINE_DATA: Final = short_uuid("baa5")
+CHAR_CURRENT_TIMESTAMP: Final = short_uuid("baa6")
+
 CHAR_SERIAL_NUMBER: Final = short_uuid("2a25")
 CHAR_FW_VERSION: Final = short_uuid("2a26")
 CHAR_HW_VERSION: Final = short_uuid("2a27")
@@ -92,6 +104,29 @@ class ChargingState(IntEnum):
     DISCONNECTED = 0
     CHARGING = 1
     CHARGED = 2
+
+
+class DataTransferCommand(IntEnum):
+    """Single byte written to DATA_COMMAND to drive a history download."""
+
+    START_TRANSFER_WITH_APPROVAL = 0
+    START_TRANSFER_NO_APPROVAL = 1
+    DELETE_DATA = 2
+    SEND_NEXT = 3
+    RESEND_CURRENT = 4
+    CLEAN_TIMESTAMP = 5
+    DIRTY_TIMESTAMP = 6
+
+
+# GENERAL_SETTING byte 0 (IntervalFrequency) -> seconds covered by one record.
+INTERVAL_SECONDS: Final = {1: 1, 5: 5, 7: 10, 10: 30, 11: 60}
+DEFAULT_INTERVAL_FREQUENCY: Final = 7
+
+SESSION_HEADER_LENGTH: Final = 10
+END_OF_DATA: Final = 0xFF
+# Low nibble of a session header's first byte.
+HEADER_CLEAN_NIBBLE: Final = 0x7
+HEADER_DIRTY_NIBBLE: Final = 0xF
 
 
 class PostureState(IntEnum):

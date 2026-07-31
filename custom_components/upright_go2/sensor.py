@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -11,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import DEGREE, EntityCategory, PERCENTAGE
+from homeassistant.const import DEGREE, EntityCategory, PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -27,7 +28,7 @@ POSTURE_STATES = ["straight", "slouch"]
 class UprightGo2SensorDescription(SensorEntityDescription):
     """Describes an Upright GO 2 sensor."""
 
-    value_fn: Callable[[UprightGo2Data], str | int | float | None]
+    value_fn: Callable[[UprightGo2Data], str | int | float | datetime | None]
     attrs_fn: Callable[[UprightGo2Data], dict[str, object]] | None = None
 
 
@@ -69,6 +70,31 @@ SENSORS: tuple[UprightGo2SensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_fn=lambda data: data.angle,
+    ),
+    UprightGo2SensorDescription(
+        key="slouching_today",
+        translation_key="slouching_today",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.slouching_today,
+    ),
+    UprightGo2SensorDescription(
+        key="upright_today",
+        translation_key="upright_today",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.upright_today,
+    ),
+    UprightGo2SensorDescription(
+        key="history_synced",
+        translation_key="history_synced",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.history_synced,
     ),
     UprightGo2SensorDescription(
         key="errors",
@@ -113,7 +139,7 @@ class UprightGo2Sensor(UprightGo2Entity, SensorEntity):
         self.entity_description = description
 
     @property
-    def native_value(self) -> str | int | float | None:
+    def native_value(self) -> str | int | float | datetime | None:
         """Return the current value."""
         return self.entity_description.value_fn(self.coordinator.data)
 

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -15,8 +17,12 @@ from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection
 
 from .const import (
+    CHAR_CURRENT_TIMESTAMP,
+    CHAR_DATA_COMMAND,
     CHAR_ERRORS,
     CHAR_FREESTYLE_SETTING,
+    CHAR_GENERAL_SETTING,
+    CHAR_OFFLINE_DATA,
     CHAR_FW_VERSION,
     CHAR_HAL_CONTROL,
     CHAR_HW_VERSION,
@@ -27,8 +33,10 @@ from .const import (
     CHAR_SMOOTH_ANGLE,
     CHAR_START_CALIBRATION,
     CHAR_VIBRATION_STATUS,
+    DEFAULT_INTERVAL_FREQUENCY,
     DELAY_MULTIPLIER,
     DEVICE_ERRORS,
+    END_OF_DATA,
     FREESTYLE_LENGTH,
     GO_RANGE_MAX,
     GO_RANGE_MIN,
@@ -50,11 +58,13 @@ from .const import (
     SHUTDOWN_REASONS,
     CalibrationCommand,
     ChargingState,
+    DataTransferCommand,
     HalControlCommand,
     PostureState,
     VibrationMode,
     VibrationPattern,
 )
+from .history import Interval, decode_session_timestamp, parse_stream
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +100,11 @@ class UprightGo2Data:
     vibration_pattern: VibrationPattern | None = None
     vibration_strength: int | None = None
     backwards_slouch_range: int | None = None
+
+    # Totals for the local day, from the device's stored history
+    slouching_today: int | None = None
+    upright_today: int | None = None
+    history_synced: datetime | None = None
 
     # Device information (read once)
     serial_number: str | None = None
@@ -477,6 +492,101 @@ class UprightGo2Client:
     async def async_deep_sleep(self) -> None:
         """Put the device into deep sleep."""
         await self._async_write(CHAR_HAL_CONTROL, bytes([HalControlCommand.DEEP_SLEEP]))
+
+    async def async_download_history(self, timeout: float = 120.0) -> list[Interval]:
+        """Download the stored posture history and parse it.
+
+        The device streams packets on OFFLINE_DATA; each one has to be
+        acknowledged with SEND_NEXT before the next arrives. The dump ends at
+        the 0xFF marker. Nothing is deleted from the device here — clearing the
+        history is a separate, deliberate action.
+        """
+        if not self.connected:
+            await self.async_connect()
+
+        async with self._lock:
+            if self._client is None:
+                raise UprightGo2Error("Not connected")
+
+            frequency = DEFAULT_INTERVAL_FREQUENCY
+            if (general := await self._read(CHAR_GENERAL_SETTING)) and general:
+                frequency = general[0]
+
+            # Anchor the device clock against wall time so the timestamps in
+            # the dump land on real dates whatever epoch the firmware uses.
+            clock_offset = 0.0
+            if (now := await self._read(CHAR_CURRENT_TIMESTAMP)) and len(now) >= 5:
+                device_now = decode_session_timestamp(now)
+                if device_now:
+                    clock_offset = time.time() - device_now
+
+            chunks: list[bytes] = []
+            finished = asyncio.Event()
+            failure: Exception | None = None
+
+            def on_packet(_char: BleakGATTCharacteristic, payload: bytearray) -> None:
+                nonlocal failure
+                data = bytes(payload)
+                chunks.append(data)
+                if END_OF_DATA in data:
+                    finished.set()
+                    return
+                # Ask for the next packet; the device will not send unprompted.
+                task = asyncio.create_task(
+                    self._client.write_gatt_char(  # type: ignore[union-attr]
+                        CHAR_DATA_COMMAND,
+                        bytes([DataTransferCommand.SEND_NEXT]),
+                        response=True,
+                    )
+                )
+
+                def _check(done: asyncio.Task[None]) -> None:
+                    nonlocal failure
+                    if (err := done.exception()) is not None:
+                        failure = err
+                        finished.set()
+
+                task.add_done_callback(_check)
+
+            try:
+                await self._client.start_notify(CHAR_OFFLINE_DATA, on_packet)
+            except (BleakError, TimeoutError) as err:
+                raise UprightGo2Error(
+                    f"Could not subscribe to the history stream: {err}"
+                ) from err
+
+            try:
+                await self._client.write_gatt_char(
+                    CHAR_DATA_COMMAND,
+                    bytes([DataTransferCommand.START_TRANSFER_NO_APPROVAL]),
+                    response=True,
+                )
+                try:
+                    await asyncio.wait_for(finished.wait(), timeout)
+                except TimeoutError:
+                    _LOGGER.debug(
+                        "History download stopped after %ss with %d packets",
+                        timeout,
+                        len(chunks),
+                    )
+            except (BleakError, TimeoutError) as err:
+                raise UprightGo2Error(f"History download failed: {err}") from err
+            finally:
+                try:
+                    await self._client.stop_notify(CHAR_OFFLINE_DATA)
+                except (BleakError, EOFError, TimeoutError) as err:
+                    _LOGGER.debug("Could not stop the history stream: %s", err)
+
+            if failure is not None:
+                raise UprightGo2Error(f"History download failed: {failure}")
+
+            return parse_stream(b"".join(chunks), frequency, clock_offset)
+
+    async def async_clear_history(self) -> None:
+        """Erase the stored history on the device."""
+        await self._async_write(
+            CHAR_DATA_COMMAND, bytes([DataTransferCommand.DELETE_DATA])
+        )
 
     async def async_update_freestyle(self, **changes: int) -> None:
         """Read the freestyle block, apply changes, and write it back.

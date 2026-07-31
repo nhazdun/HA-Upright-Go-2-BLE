@@ -23,11 +23,15 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_HISTORY_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_HISTORY_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     KNOWN_LOCAL_NAMES,
+    MAX_HISTORY_INTERVAL,
     MAX_SCAN_INTERVAL,
+    MIN_HISTORY_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
 from .coordinator import UprightGo2ConfigEntry
@@ -130,17 +134,21 @@ class UprightGo2OptionsFlow(OptionsFlow):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(
-                data={CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])}
+                data={
+                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                    CONF_HISTORY_INTERVAL: int(user_input[CONF_HISTORY_INTERVAL]),
+                }
             )
 
-        current = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-        )
+        options = self.config_entry.options
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_SCAN_INTERVAL, default=current): NumberSelector(
+                    vol.Required(
+                        CONF_SCAN_INTERVAL,
+                        default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                    ): NumberSelector(
                         NumberSelectorConfig(
                             min=MIN_SCAN_INTERVAL,
                             max=MAX_SCAN_INTERVAL,
@@ -148,7 +156,21 @@ class UprightGo2OptionsFlow(OptionsFlow):
                             unit_of_measurement="s",
                             mode=NumberSelectorMode.BOX,
                         )
-                    )
+                    ),
+                    vol.Required(
+                        CONF_HISTORY_INTERVAL,
+                        default=options.get(
+                            CONF_HISTORY_INTERVAL, DEFAULT_HISTORY_INTERVAL
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=MIN_HISTORY_INTERVAL,
+                            max=MAX_HISTORY_INTERVAL,
+                            step=600,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
                 }
             ),
         )
