@@ -12,14 +12,9 @@ directly to the device's GATT services.
 | Entity | Type | Notes |
 |---|---|---|
 | Battery | sensor | percent |
-| Charging state | sensor | not charging / charging / fully charged |
 | Charging | binary sensor | `battery_charging` device class |
-| Low battery | binary sensor | at or below 10 % |
-| Posture | sensor | straight / slouching |
 | Slouching | binary sensor | |
 | Posture angle | sensor | degrees, one decimal |
-| Device errors | sensor | diagnostic, disabled by default |
-| Problem | binary sensor | on when the device reports any error |
 | Vibration | switch | slouch buzz on/off |
 | Vibration pattern | select | 9 patterns |
 | Vibration strength | select | gentle / medium / strong |
@@ -60,6 +55,30 @@ unless you press *Clear history*, which is disabled by default.
 
 Resolution of the topped-up part is the device's own recording interval — 10 s
 out of the box.
+
+## Dashboard card
+
+The integration ships a custom card and registers it itself — no dashboard
+resource to add by hand. It shows a silhouette that leans with the measured
+angle in real time, a ring that turns red when you slouch, the running totals,
+and a calibrate / vibration / delay row.
+
+```yaml
+type: custom:upright-go2-card
+angle: sensor.upright_go_2_posture_angle
+slouching: binary_sensor.upright_go_2_slouching
+battery: sensor.upright_go_2_battery
+upright_time: sensor.upright_go_2_upright_time
+slouching_time: sensor.upright_go_2_slouching_time
+vibration: switch.upright_go_2_vibration
+delay: number.upright_go_2_vibration_delay
+calibrate: button.upright_go_2_calibrate
+# Angles that count as fully upright and fully slouched, which depend on how
+# the unit sits on your back. Tune these if the figure leans too much or
+# too little.
+upright_angle: 35
+slouch_angle: 75
+```
 
 ## Protocol
 

@@ -20,10 +20,6 @@ from .api import UprightGo2Data
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
 from .entity import UprightGo2Entity
 
-CHARGING_STATES = ["disconnected", "charging", "charged"]
-POSTURE_STATES = ["straight", "slouch"]
-
-
 @dataclass(frozen=True, kw_only=True)
 class UprightGo2SensorDescription(SensorEntityDescription):
     """Describes an Upright GO 2 sensor."""
@@ -40,28 +36,6 @@ SENSORS: tuple[UprightGo2SensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.battery_level,
-    ),
-    UprightGo2SensorDescription(
-        key="charging_state",
-        translation_key="charging_state",
-        device_class=SensorDeviceClass.ENUM,
-        options=CHARGING_STATES,
-        value_fn=(
-            lambda data: CHARGING_STATES[data.charging_state]
-            if data.charging_state is not None
-            else None
-        ),
-    ),
-    UprightGo2SensorDescription(
-        key="posture",
-        translation_key="posture",
-        device_class=SensorDeviceClass.ENUM,
-        options=POSTURE_STATES,
-        value_fn=(
-            lambda data: POSTURE_STATES[data.posture]
-            if data.posture is not None
-            else None
-        ),
     ),
     UprightGo2SensorDescription(
         key="angle",
@@ -97,19 +71,6 @@ SENSORS: tuple[UprightGo2SensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.history_synced,
-    ),
-    UprightGo2SensorDescription(
-        key="errors",
-        translation_key="errors",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: ", ".join(data.errors) if data.errors else "none",
-        attrs_fn=lambda data: {
-            "errors": data.errors,
-            "malfunction": data.malfunction,
-            "shutdown_reason": data.shutdown_reason,
-            "reset_reasons": data.reset_reasons,
-        },
     ),
 )
 

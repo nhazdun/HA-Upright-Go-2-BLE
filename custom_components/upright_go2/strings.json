@@ -33,9 +33,6 @@
     "binary_sensor": {
       "slouching": {
         "name": "Slouching"
-      },
-      "device_error": {
-        "name": "Device error"
       }
     },
     "button": {
@@ -90,24 +87,6 @@
     "sensor": {
       "angle": {
         "name": "Posture angle"
-      },
-      "charging_state": {
-        "name": "Charging state",
-        "state": {
-          "disconnected": "Not charging",
-          "charging": "Charging",
-          "charged": "Fully charged"
-        }
-      },
-      "errors": {
-        "name": "Device errors"
-      },
-      "posture": {
-        "name": "Posture",
-        "state": {
-          "straight": "Straight",
-          "slouch": "Slouching"
-        }
       },
       "history_synced": {
         "name": "History last synced"

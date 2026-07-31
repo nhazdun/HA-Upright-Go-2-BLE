@@ -47,33 +47,6 @@ BINARY_SENSORS: tuple[UprightGo2BinarySensorDescription, ...] = (
             else None
         ),
     ),
-    UprightGo2BinarySensorDescription(
-        key="low_battery",
-        device_class=BinarySensorDeviceClass.BATTERY,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=(
-            lambda data: data.battery_level <= LOW_BATTERY_VALUE
-            if data.battery_level is not None
-            else None
-        ),
-    ),
-    # Opt-in: the error decoding is derived from the app but has never been
-    # seen against a device that actually reports a fault, so it stays off by
-    # default rather than raising a bare "Problem" nobody can act on.
-    UprightGo2BinarySensorDescription(
-        key="problem",
-        translation_key="device_error",
-        device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda data: bool(data.errors),
-        attrs_fn=lambda data: {
-            "errors": data.errors,
-            "malfunction": data.malfunction,
-            "shutdown_reason": data.shutdown_reason,
-            "reset_reasons": data.reset_reasons,
-        },
-    ),
 )
 
 

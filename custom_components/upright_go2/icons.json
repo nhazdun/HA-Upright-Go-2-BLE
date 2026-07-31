@@ -6,9 +6,6 @@
         "state": {
           "off": "mdi:human-handsup"
         }
-      },
-      "device_error": {
-        "default": "mdi:alert-circle-outline"
       }
     },
     "button": {
@@ -47,18 +44,6 @@
     "sensor": {
       "angle": {
         "default": "mdi:angle-acute"
-      },
-      "charging_state": {
-        "default": "mdi:battery-charging"
-      },
-      "errors": {
-        "default": "mdi:alert-circle-outline"
-      },
-      "posture": {
-        "default": "mdi:human-handsup",
-        "state": {
-          "slouch": "mdi:human-cane"
-        }
       },
       "history_synced": {
         "default": "mdi:database-clock-outline"
