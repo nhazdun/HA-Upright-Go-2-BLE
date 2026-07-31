@@ -324,9 +324,22 @@ class UprightGo2Client:
 
     @staticmethod
     def _decode_text(payload: bytes | None) -> str | None:
+        """Decode a Device Information value.
+
+        These are not always text: the serial number comes back as raw bytes
+        padded with 0xFF (the app's IGNORE_VALUE), which decoded as UTF-8 turns
+        into a row of replacement characters. Render printable payloads as
+        text and anything else as hex, which is what the app's
+        decodeByteArrayHex helper does.
+        """
         if not payload:
             return None
-        return payload.decode("utf-8", errors="replace").strip("\x00").strip() or None
+        trimmed = payload.rstrip(b"\xff\x00")
+        if not trimmed:
+            return None
+        if all(0x20 <= byte < 0x7F for byte in trimmed):
+            return trimmed.decode("ascii").strip() or None
+        return trimmed.hex().upper()
 
     async def async_poll(self) -> UprightGo2Data:
         """Refresh the values that have no notification."""
