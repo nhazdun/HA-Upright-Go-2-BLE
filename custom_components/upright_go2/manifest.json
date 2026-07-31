@@ -16,7 +16,8 @@
   "dependencies": [
     "bluetooth_adapters",
     "http",
-    "frontend"
+    "frontend",
+    "lovelace"
   ],
   "documentation": "https://github.com/nhazdun/HA-Upright-Go-2-BLE",
   "integration_type": "device",
@@ -25,5 +26,5 @@
   "requirements": [
     "bleak-retry-connector>=3.5.0"
   ],
-  "version": "2.1.2"
+  "version": "2.1.3"
 }

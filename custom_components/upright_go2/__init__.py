@@ -42,8 +42,47 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         [StaticPathConfig(CARD_URL, str(path), True)]
     )
     # Version the URL so a browser does not keep serving a stale card.
-    add_extra_js_url(hass, f"{CARD_URL}?v={_card_version(hass)}")
-    _LOGGER.debug("Registered dashboard card at %s", CARD_URL)
+    versioned = f"{CARD_URL}?v={_card_version(hass)}"
+
+    # Loading it as an extra module alone leaves a race: the dashboard can
+    # render before the module has evaluated, and a card whose element is not
+    # defined yet shows "Configuration error" until the page is reloaded.
+    # Lovelace waits for its own resources before rendering, so register there
+    # too — the browser caches the module by URL, so it is fetched once.
+    if not await _async_register_lovelace_resource(hass, versioned):
+        add_extra_js_url(hass, versioned)
+    _LOGGER.debug("Registered dashboard card at %s", versioned)
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> bool:
+    """Add the card to Lovelace's resources, replacing any older version.
+
+    Returns False if Lovelace is not in storage mode or its API has moved, so
+    the caller can fall back to a plain frontend module.
+    """
+    try:
+        lovelace = hass.data.get("lovelace")
+        resources = getattr(lovelace, "resources", None)
+        if resources is None:
+            return False
+        if hasattr(resources, "async_get_info"):
+            await resources.async_get_info()
+
+        existing = [
+            item
+            for item in resources.async_items()
+            if str(item.get("url", "")).startswith(CARD_URL)
+        ]
+        if any(item.get("url") == url for item in existing):
+            return True
+
+        for item in existing:  # a stale version of our own card
+            await resources.async_delete_item(item["id"])
+        await resources.async_create_item({"res_type": "module", "url": url})
+    except Exception as err:  # noqa: BLE001 - never block setup on the frontend
+        _LOGGER.debug("Could not register the Lovelace resource: %s", err)
+        return False
+    return True
 
 
 def _card_version(hass: HomeAssistant) -> str:
