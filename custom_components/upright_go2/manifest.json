@@ -14,8 +14,7 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "bluetooth_adapters",
-    "recorder"
+    "bluetooth_adapters"
   ],
   "documentation": "https://github.com/nhazdun/HA-Upright-Go-2-BLE",
   "integration_type": "device",
@@ -24,5 +23,5 @@
   "requirements": [
     "bleak-retry-connector>=3.5.0"
   ],
-  "version": "1.5.2"
+  "version": "2.0.0"
 }

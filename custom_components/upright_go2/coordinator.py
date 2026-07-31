@@ -3,20 +3,23 @@
 Posture and angle arrive as BLE notifications and are pushed straight into the
 coordinator; everything else is re-read on the slower interval over the same
 connection.
+
+The two posture totals are cumulative counters. Live time is added as it
+elapses, and the device's stored history tops up the stretches nothing was
+connected for. Home Assistant's recorder turns those counters into per-day
+statistics on its own, so no per-day entities are needed.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.components import bluetooth
-from homeassistant.components.recorder.models import StatisticData
-from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -29,16 +32,12 @@ from .const import (
     DOMAIN,
     PostureState,
 )
-from .history import LiveTracker, hourly_totals, merge_buckets, summarise
-
-try:  # HA 2025.11 replaced has_mean with mean_type
-    from homeassistant.components.recorder.models import StatisticMeanType
-
-    _MEAN_META: dict[str, object] = {"mean_type": StatisticMeanType.NONE}
-except ImportError:  # pragma: no cover - older cores
-    _MEAN_META = {"has_mean": False}
+from .history import PostureClock, history_since
 
 _LOGGER = logging.getLogger(__name__)
+
+STORAGE_VERSION = 1
+SAVE_DELAY = 30
 
 type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 
@@ -65,10 +64,65 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         self._history_interval = timedelta(
             seconds=entry.options.get(CONF_HISTORY_INTERVAL, DEFAULT_HISTORY_INTERVAL)
         )
-        self._slug = address.replace(":", "").lower()
         self._history_task: asyncio.Task[None] | None = None
-        self._live = LiveTracker()
-        self._offline_today: tuple[int, int] = (0, 0)
+        self._clock = PostureClock()
+        self._store: Store[dict[str, object]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{address.replace(':', '').lower()}"
+        )
+        # Cumulative seconds, kept as floats so sub-second credits survive.
+        self._slouching = 0.0
+        self._upright = 0.0
+        self._counted_until: datetime | None = None
+
+    async def async_load(self) -> None:
+        """Restore the counters so a restart does not reset them to zero."""
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        self._slouching = float(stored.get("slouching_seconds") or 0.0)
+        self._upright = float(stored.get("upright_seconds") or 0.0)
+        if counted := stored.get("counted_until"):
+            self._counted_until = dt_util.parse_datetime(str(counted))
+        _LOGGER.debug(
+            "Restored totals: %.0fs slouching, %.0fs upright, counted to %s",
+            self._slouching,
+            self._upright,
+            self._counted_until,
+        )
+
+    def _save(self) -> None:
+        """Persist the counters, debounced."""
+        self._store.async_delay_save(
+            lambda: {
+                "slouching_seconds": self._slouching,
+                "upright_seconds": self._upright,
+                "counted_until": (
+                    self._counted_until.isoformat() if self._counted_until else None
+                ),
+            },
+            SAVE_DELAY,
+        )
+
+    def _publish(self, data: UprightGo2Data) -> None:
+        """Copy the counters onto the snapshot the entities read."""
+        data.slouching_seconds = round(self._slouching)
+        data.upright_seconds = round(self._upright)
+
+    def _tick(self, data: UprightGo2Data, now: datetime) -> None:
+        """Credit the time since the last tick against the current posture."""
+        if data.posture is None:
+            return
+        slouching, upright = self._clock.update(
+            data.posture is PostureState.SLOUCH, now
+        )
+        if slouching or upright:
+            self._slouching += slouching
+            self._upright += upright
+            self._counted_until = now
+            self._save()
+        elif self._counted_until is None:
+            self._counted_until = now
+        self._publish(data)
 
     def _handle_notification(self, data: UprightGo2Data) -> None:
         """Push a notification-driven update to the entities.
@@ -79,18 +133,8 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
 
     def _apply_notification(self, data: UprightGo2Data) -> None:
         """Bank live posture time, then publish the update."""
-        if data.posture is not None:
-            self._live.update(data.posture is PostureState.SLOUCH, dt_util.utcnow())
-            self._refresh_today(data)
+        self._tick(data, dt_util.utcnow())
         self.async_set_updated_data(data)
-
-    def _refresh_today(self, data: UprightGo2Data) -> None:
-        """Recompute today's totals from stored history plus live time."""
-        timezone = dt_util.get_default_time_zone()
-        today = dt_util.now().date().isoformat()
-        live_slouch, live_upright = self._live.totals_for(today, timezone)
-        data.slouching_today = self._offline_today[0] + live_slouch
-        data.upright_today = self._offline_today[1] + live_upright
 
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
@@ -118,15 +162,14 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         try:
             data = await client.async_poll()
         except UprightGo2Error as err:
+            # The link is down, so stop the clock rather than banking the
+            # outage as posture time once it comes back.
+            self._clock.pause(dt_util.utcnow())
             raise UpdateFailed(str(err)) from err
 
-        # Bank live time on every tick, not only when posture changes.
-        # POSTURE_STATUS only notifies on a change, so sitting straight for an
-        # hour produces no events — and a span that long would then be thrown
-        # away as an implausible gap.
-        if data.posture is not None:
-            self._live.update(data.posture is PostureState.SLOUCH, dt_util.utcnow())
-            self._refresh_today(data)
+        # Tick here too: POSTURE_STATUS only notifies on a change, so sitting
+        # straight for an hour produces no events at all.
+        self._tick(data, dt_util.utcnow())
 
         due = data.history_synced is None or (
             dt_util.utcnow() - data.history_synced >= self._history_interval
@@ -151,87 +194,49 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
             _LOGGER.exception("Unexpected error while syncing history")
 
     async def async_sync_history(self) -> None:
-        """Download the stored history and fold it into totals and statistics."""
+        """Top the counters up with whatever the device recorded while away."""
         client = self._get_client()
         # Stamp first: a sync that fails should not be retried on every tick.
         client.data.history_synced = dt_util.utcnow()
         intervals = await client.async_download_history()
         if not intervals:
-            client.data.history_synced = dt_util.utcnow()
             return
 
-        timezone = dt_util.get_default_time_zone()
-        summary = summarise(intervals, timezone)
-        now = dt_util.now()
-        today = now.date().isoformat()
-        yesterday = (now.date() - timedelta(days=1)).isoformat()
-        self._offline_today = (
-            summary.slouching.get(today, 0),
-            summary.upright.get(today, 0),
-        )
-        self._refresh_today(client.data)
-        client.data.slouching_yesterday = summary.slouching.get(yesterday, 0)
-        client.data.upright_yesterday = summary.upright.get(yesterday, 0)
-        client.data.history_days = len(summary.days)
-        client.data.history_synced = dt_util.utcnow()
-
-        self._live.prune(dt_util.utcnow() - timedelta(days=14))
-        await self._async_write_statistics(
-            merge_buckets(hourly_totals(intervals, timezone), self._live.buckets)
-        )
-        self.async_set_updated_data(client.data)
-        _LOGGER.debug(
-            "Synced %d intervals covering %d day(s)", len(intervals), len(summary.days)
-        )
-
-    async def _async_write_statistics(
-        self, buckets: dict[object, tuple[int, int]]
-    ) -> None:
-        """Feed hourly totals to the recorder as external statistics.
-
-        Hourly buckets let the statistics UI roll the data up per day, and
-        because they carry real timestamps the history stays correct for
-        periods when Home Assistant was not connected at all.
-        """
-        for key, position, label in (
-            ("slouching", 0, "Slouching time"),
-            ("upright", 1, "Upright time"),
-        ):
-            statistic_id = f"{DOMAIN}:{self._slug}_{key}_seconds"
-
-            # Rewrite every bucket rather than appending only new ones. The
-            # whole device history is downloaded each time, so recomputing the
-            # cumulative sum from scratch backfills days Home Assistant never
-            # saw and corrects days an earlier partial download got wrong.
-            # Skipping anything older than the last stored hour would leave
-            # both of those permanently stale.
-            total = 0.0
-            stats: list[StatisticData] = []
-            for hour in sorted(buckets):
-                seconds = buckets[hour][position]
-                total += seconds
-                stats.append(StatisticData(start=hour, state=seconds, sum=total))
-
-            if not stats:
-                continue
-
-            async_add_external_statistics(
-                self.hass,
-                {
-                    **_MEAN_META,
-                    "has_sum": True,
-                    "name": f"Upright GO 2 {label}",
-                    "source": DOMAIN,
-                    "statistic_id": statistic_id,
-                    "unit_of_measurement": UnitOfTime.SECONDS,
-                    "unit_class": "duration",
-                },
-                stats,
+        slouching, upright, newest = history_since(intervals, self._counted_until)
+        if slouching or upright:
+            self._slouching += slouching
+            self._upright += upright
+            self._counted_until = newest
+            self._save()
+            _LOGGER.debug(
+                "Topped up from device history: +%ds slouching, +%ds upright"
+                " (%d intervals, counted to %s)",
+                slouching,
+                upright,
+                len(intervals),
+                newest,
             )
+
+        self._publish(client.data)
+        self.async_set_updated_data(client.data)
 
     async def async_shutdown(self) -> None:
         """Drop the connection when the entry unloads."""
-        self._live.pause(dt_util.utcnow())
+        slouching, upright = self._clock.pause(dt_util.utcnow())
+        if slouching or upright:
+            self._slouching += slouching
+            self._upright += upright
+            self._counted_until = dt_util.utcnow()
+        # Write through immediately; a debounced save may not survive a reload.
+        await self._store.async_save(
+            {
+                "slouching_seconds": self._slouching,
+                "upright_seconds": self._upright,
+                "counted_until": (
+                    self._counted_until.isoformat() if self._counted_until else None
+                ),
+            }
+        )
         await super().async_shutdown()
         if self._client is not None:
             await self._client.async_disconnect()

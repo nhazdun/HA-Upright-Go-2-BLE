@@ -60,23 +60,14 @@
           "slouch": "mdi:human-cane"
         }
       },
-      "slouching_today": {
-        "default": "mdi:human-cane"
-      },
-      "upright_today": {
-        "default": "mdi:human-handsup"
-      },
       "history_synced": {
         "default": "mdi:database-clock-outline"
       },
-      "slouching_yesterday": {
+      "slouching_time": {
         "default": "mdi:human-cane"
       },
-      "upright_yesterday": {
+      "upright_time": {
         "default": "mdi:human-handsup"
-      },
-      "history_days": {
-        "default": "mdi:calendar-range"
       }
     },
     "switch": {

@@ -109,23 +109,14 @@
           "slouch": "Slouching"
         }
       },
-      "slouching_today": {
-        "name": "Slouching today"
-      },
-      "upright_today": {
-        "name": "Upright today"
-      },
       "history_synced": {
         "name": "History last synced"
       },
-      "slouching_yesterday": {
-        "name": "Slouching yesterday"
+      "slouching_time": {
+        "name": "Slouching time"
       },
-      "upright_yesterday": {
-        "name": "Upright yesterday"
-      },
-      "history_days": {
-        "name": "History days stored"
+      "upright_time": {
+        "name": "Upright time"
       }
     },
     "switch": {

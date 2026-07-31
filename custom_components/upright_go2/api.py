@@ -108,12 +108,10 @@ class UprightGo2Data:
     vibration_strength: int | None = None
     backwards_slouch_range: int | None = None
 
-    # Totals for the local day, from the device's stored history
-    slouching_today: int | None = None
-    upright_today: int | None = None
-    slouching_yesterday: int | None = None
-    upright_yesterday: int | None = None
-    history_days: int | None = None
+    # Cumulative posture time: live plus whatever the device recorded while
+    # nothing was connected. The recorder derives per-day figures from these.
+    slouching_seconds: int | None = None
+    upright_seconds: int | None = None
     history_synced: datetime | None = None
 
     # Device information (read once)

@@ -238,109 +238,72 @@ def summarise(intervals: list[Interval], tzinfo: object = None) -> HistorySummar
     return summary
 
 
-class LiveTracker:
-    """Accumulates posture time while Home Assistant is connected.
+MAX_LIVE_GAP = 3600
 
-    The device's stored history only covers stretches when nothing was
-    connected to it — with a live connection held open it records almost
-    nothing, so the on-device dump alone cannot add up to a full day. This
-    fills the connected stretches by timing how long each posture lasts.
+
+class PostureClock:
+    """Times how long each posture lasts while the device is connected.
+
+    The stored history only covers stretches when nothing was connected — the
+    device records to flash while offline — so a live connection has to be
+    timed separately for the totals to mean anything.
     """
 
     def __init__(self) -> None:
-        """Start with nothing recorded."""
-        # Seconds are kept as floats. Credits arrive on every notification —
-        # often several per second — so rounding each one to a whole second
-        # threw away everything: a 0.4 s credit truncated to 0, and the totals
-        # never moved off zero.
-        self.buckets: dict[datetime, list[float]] = {}
+        """Start the clock unarmed."""
         self._since: datetime | None = None
         self._slouching: bool | None = None
 
-    def update(self, slouching: bool | None, now: datetime) -> None:
-        """Record the time spent since the last update and set the new state."""
-        if self._since is not None and self._slouching is not None:
-            self._credit(self._since, now, self._slouching)
+    def update(self, slouching: bool | None, now: datetime) -> tuple[float, float]:
+        """Return (slouching, upright) seconds elapsed since the last call.
+
+        Seconds are returned as floats. Credits arrive on every notification,
+        several times a second, so rounding each one on the way in threw the
+        whole lot away.
+        """
+        elapsed = self._elapsed(now)
         self._since = now
         self._slouching = slouching
+        return elapsed
 
-    def pause(self, now: datetime) -> None:
-        """Stop timing, e.g. when the link drops, without losing what is banked."""
-        if self._since is not None and self._slouching is not None:
-            self._credit(self._since, now, self._slouching)
+    def pause(self, now: datetime) -> tuple[float, float]:
+        """Stop the clock, returning whatever was still owed."""
+        elapsed = self._elapsed(now)
         self._since = None
         self._slouching = None
+        return elapsed
 
-    def _credit(self, start: datetime, end: datetime, slouching: bool) -> None:
-        """Add a span to the hourly buckets, splitting it on hour boundaries."""
-        if end <= start:
-            return
-        # Ignore implausible gaps: a suspended host or a long disconnect should
-        # not land as hours of posture nobody was actually in.
-        if (end - start).total_seconds() > 3600:
-            return
-        position = 0 if slouching else 1
-        cursor = start
-        while cursor < end:
-            hour = cursor.replace(minute=0, second=0, microsecond=0)
-            boundary = hour + timedelta(hours=1)
-            chunk = min(end, boundary) - cursor
-            bucket = self.buckets.setdefault(hour, [0.0, 0.0])
-            bucket[position] += chunk.total_seconds()
-            cursor = min(end, boundary)
-
-    def totals_for(self, day: str, tzinfo: object = None) -> tuple[int, int]:
-        """Return (slouching, upright) seconds banked for a local day."""
-        slouch = upright = 0.0
-        for hour, (s, u) in self.buckets.items():
-            moment = hour.astimezone(tzinfo) if tzinfo else hour
-            if moment.date().isoformat() == day:
-                slouch += s
-                upright += u
-        return round(slouch), round(upright)
-
-    def prune(self, before: datetime) -> None:
-        """Drop buckets older than the cutoff to keep memory bounded."""
-        for hour in [h for h in self.buckets if h < before]:
-            del self.buckets[hour]
+    def _elapsed(self, now: datetime) -> tuple[float, float]:
+        if self._since is None or self._slouching is None:
+            return 0.0, 0.0
+        seconds = (now - self._since).total_seconds()
+        # Ignore implausible gaps: a suspended host or a long disconnect must
+        # not land as hours of a posture nobody was actually in.
+        if seconds <= 0 or seconds > MAX_LIVE_GAP:
+            return 0.0, 0.0
+        return (seconds, 0.0) if self._slouching else (0.0, seconds)
 
 
-def merge_buckets(
-    offline: dict[datetime, tuple[int, int]],
-    live: dict[datetime, list[float]],
-) -> dict[datetime, tuple[int, int]]:
-    """Combine stored-history and live buckets, taking the larger of each.
+def history_since(
+    intervals: list[Interval], watermark: datetime | None
+) -> tuple[int, int, datetime | None]:
+    """Total the stored intervals that have not been counted yet.
 
-    The two sources should not overlap — the device only stores what happened
-    while disconnected — but taking the maximum keeps a partial overlap from
-    double-counting an hour.
+    Live timing advances the watermark as it goes, so anything the device
+    recorded while connected is already accounted for. What is left is exactly
+    the gaps — times Home Assistant was down or out of range — which is what
+    should be topped up.
     """
-    merged: dict[datetime, tuple[int, int]] = dict(offline)
-    for hour, (slouch, upright) in live.items():
-        existing = merged.get(hour, (0, 0))
-        merged[hour] = (
-            max(existing[0], round(slouch)),
-            max(existing[1], round(upright)),
-        )
-    return merged
-
-
-def hourly_totals(
-    intervals: list[Interval], tzinfo: object = None
-) -> dict[datetime, tuple[int, int]]:
-    """Total the intervals per hour as (slouching, upright) seconds.
-
-    Hourly buckets are what the recorder wants; it rolls them up into days and
-    months for the statistics UI on its own.
-    """
-    buckets: dict[datetime, tuple[int, int]] = {}
+    slouching = upright = 0
+    newest = watermark
     for interval in intervals:
-        moment = interval.start.astimezone(tzinfo) if tzinfo else interval.start
-        hour = moment.replace(minute=0, second=0, microsecond=0)
-        slouch, upright = buckets.get(hour, (0, 0))
+        end = interval.start + timedelta(seconds=interval.duration)
+        if watermark is not None and end <= watermark:
+            continue
         if interval.slouching:
-            slouch += interval.duration
+            slouching += interval.duration
         else:
             upright += interval.duration
-        buckets[hour] = (slouch, upright)
-    return buckets
+        if newest is None or end > newest:
+            newest = end
+    return slouching, upright, newest
