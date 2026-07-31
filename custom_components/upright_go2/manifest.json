@@ -2,16 +2,26 @@
   "domain": "upright_go2",
   "name": "Upright GO 2",
   "bluetooth": [
-    { "local_name": "UprightGO2" },
-    { "local_name": "UprightGOS" }
+    {
+      "local_name": "UprightGO2"
+    },
+    {
+      "local_name": "UprightGOS"
+    }
   ],
-  "codeowners": ["@nhazdun"],
+  "codeowners": [
+    "@nhazdun"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/nhazdun/HA-Upright-Go-2-BLE",
   "integration_type": "device",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/nhazdun/HA-Upright-Go-2-BLE/issues",
-  "requirements": ["bleak-retry-connector>=3.5.0"],
-  "version": "1.1.0"
+  "requirements": [
+    "bleak-retry-connector>=3.5.0"
+  ],
+  "version": "1.2.0"
 }

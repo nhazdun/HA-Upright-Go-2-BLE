@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from bleak import BleakClient
+from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection
@@ -57,6 +59,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 20.0
+RECONNECT_MIN_DELAY = 5
+RECONNECT_MAX_DELAY = 120
 
 
 class UprightGo2Error(Exception):
@@ -65,7 +69,7 @@ class UprightGo2Error(Exception):
 
 @dataclass(slots=True)
 class UprightGo2Data:
-    """A snapshot of everything read in one polling pass."""
+    """The current view of the device."""
 
     battery_level: int | None = None
     charging_state: ChargingState | None = None
@@ -102,7 +106,9 @@ def _decode_bitmask(value: int, names: tuple[str, ...]) -> list[str]:
     return [name for index, name in enumerate(names) if value & (1 << index)]
 
 
-def decode_errors(payload: bytes) -> tuple[list[str], bool | None, str | None, list[str]]:
+def decode_errors(
+    payload: bytes,
+) -> tuple[list[str], bool | None, str | None, list[str]]:
     """Decode the ERRORS characteristic.
 
     Returns the active errors, the malfunction flag, the shutdown reason and
@@ -138,36 +144,165 @@ def decode_errors(payload: bytes) -> tuple[list[str], bool | None, str | None, l
 
 
 class UprightGo2Client:
-    """Connect to the device, read a snapshot, and disconnect.
+    """Holds a connection to the device and streams posture notifications.
 
-    The GO 2 only accepts one connection at a time, so the client holds the
-    link for as short a time as possible: the phone app stays usable between
-    polls.
+    The official app subscribes to the posture characteristics rather than
+    polling them, and the device only reports posture and angle while a
+    subscriber is attached — so a live connection is kept open and the
+    notifications drive the state. Battery, settings and errors have no
+    notification, so they are re-read on the coordinator's slower tick over
+    that same connection.
     """
 
-    def __init__(self, ble_device: BLEDevice) -> None:
+    def __init__(
+        self,
+        ble_device: BLEDevice,
+        notify_callback: Callable[[UprightGo2Data], None] | None = None,
+    ) -> None:
         """Initialise the client for a device."""
         self._ble_device = ble_device
+        self._notify_callback = notify_callback
         self._lock = asyncio.Lock()
+        self._client: BleakClient | None = None
         self._static_info: dict[str, str | None] = {}
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._reconnect_delay = RECONNECT_MIN_DELAY
+        self._closing = False
+        self.data = UprightGo2Data()
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the underlying device, e.g. when it moves between proxies."""
         self._ble_device = ble_device
 
-    async def _connect(self) -> BleakClient:
-        return await establish_connection(
-            BleakClient,
-            self._ble_device,
-            self._ble_device.address,
-            timeout=CONNECT_TIMEOUT,
-        )
+    @property
+    def connected(self) -> bool:
+        """Return whether the link is currently up."""
+        return self._client is not None and self._client.is_connected
 
-    @staticmethod
-    async def _read(client: BleakClient, uuid: str) -> bytes | None:
-        """Read a characteristic, returning None when it is absent."""
+    # --- connection handling ------------------------------------------------
+
+    def _on_disconnect(self, _client: BleakClient) -> None:
+        """Handle an unsolicited disconnect by scheduling a reconnect."""
+        if self._closing:
+            return
+        _LOGGER.debug("%s disconnected", self._ble_device.address)
+        self._client = None
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+
+    async def _reconnect_loop(self) -> None:
+        """Reconnect with backoff until the link is restored."""
+        while not self._closing and not self.connected:
+            await asyncio.sleep(self._reconnect_delay)
+            if self._closing:
+                return
+            try:
+                await self.async_connect()
+            except UprightGo2Error as err:
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, RECONNECT_MAX_DELAY
+                )
+                _LOGGER.debug(
+                    "Reconnect failed (%s); retrying in %ss",
+                    err,
+                    self._reconnect_delay,
+                )
+            else:
+                self._reconnect_delay = RECONNECT_MIN_DELAY
+
+    async def async_connect(self) -> None:
+        """Establish the link and subscribe to posture notifications."""
+        async with self._lock:
+            if self.connected:
+                return
+            self._closing = False
+            try:
+                self._client = await establish_connection(
+                    BleakClient,
+                    self._ble_device,
+                    self._ble_device.address,
+                    disconnected_callback=self._on_disconnect,
+                    timeout=CONNECT_TIMEOUT,
+                )
+            except (BleakError, TimeoutError) as err:
+                raise UprightGo2Error(
+                    f"Could not connect to {self._ble_device.address}: {err}"
+                ) from err
+
+            await self._async_subscribe()
+
+    async def _async_subscribe(self) -> None:
+        """Attach to the characteristics that push updates."""
+        assert self._client is not None
+        for uuid, handler in (
+            (CHAR_POSTURE_STATUS, self._handle_posture),
+            (CHAR_SMOOTH_ANGLE, self._handle_angle),
+            (CHAR_VIBRATION_STATUS, self._handle_vibration),
+        ):
+            try:
+                await self._client.start_notify(uuid, handler)
+            except (BleakError, TimeoutError) as err:
+                # Not every firmware exposes all three as notifiable; the
+                # slow poll still picks these values up.
+                _LOGGER.debug("Could not subscribe to %s: %s", uuid, err)
+
+    async def async_disconnect(self) -> None:
+        """Tear the link down and stop reconnecting."""
+        self._closing = True
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+        async with self._lock:
+            if self._client is None:
+                return
+            try:
+                await self._client.disconnect()
+            except (BleakError, EOFError, TimeoutError) as err:
+                _LOGGER.debug("Error while disconnecting: %s", err)
+            finally:
+                self._client = None
+
+    # --- notification handlers ----------------------------------------------
+
+    def _publish(self) -> None:
+        if self._notify_callback is not None:
+            self._notify_callback(self.data)
+
+    def _handle_posture(
+        self, _char: BleakGATTCharacteristic, payload: bytearray
+    ) -> None:
+        if not payload:
+            return
         try:
-            return bytes(await client.read_gatt_char(uuid))
+            self.data.posture = PostureState(payload[0])
+        except ValueError:
+            _LOGGER.debug("Unknown posture state %s", payload[0])
+            return
+        self._publish()
+
+    def _handle_angle(
+        self, _char: BleakGATTCharacteristic, payload: bytearray
+    ) -> None:
+        if (angle := decode_angle(bytes(payload))) is None:
+            return
+        self.data.angle = angle
+        self._publish()
+
+    def _handle_vibration(
+        self, _char: BleakGATTCharacteristic, payload: bytearray
+    ) -> None:
+        if not payload:
+            return
+        self.data.vibration_on = payload[0] == VibrationMode.ON
+        self._publish()
+
+    # --- reads --------------------------------------------------------------
+
+    async def _read(self, uuid: str) -> bytes | None:
+        """Read a characteristic, returning None when it is absent."""
+        if self._client is None:
+            return None
+        try:
+            return bytes(await self._client.read_gatt_char(uuid))
         except (BleakError, EOFError, TimeoutError) as err:
             _LOGGER.debug("Could not read %s: %s", uuid, err)
             return None
@@ -179,112 +314,99 @@ class UprightGo2Client:
         return payload.decode("utf-8", errors="replace").strip("\x00").strip() or None
 
     async def async_poll(self) -> UprightGo2Data:
-        """Connect, read every exposed value, and disconnect."""
+        """Refresh the values that have no notification."""
+        if not self.connected:
+            await self.async_connect()
+
         async with self._lock:
-            try:
-                client = await self._connect()
-            except (BleakError, TimeoutError) as err:
-                raise UprightGo2Error(
-                    f"Could not connect to {self._ble_device.address}: {err}"
-                ) from err
+            data = self.data
 
-            try:
-                return await self._async_read_all(client)
-            finally:
+            if (power_first := await self._read(CHAR_POWER_DATA_FIRST)) and len(
+                power_first
+            ) > OFFSET_BATTERY_LEVEL:
+                data.battery_level = power_first[OFFSET_BATTERY_LEVEL]
+
+            if (power_second := await self._read(CHAR_POWER_DATA_SECOND)) and len(
+                power_second
+            ) > OFFSET_CHARGING_STATE:
+                raw = power_second[OFFSET_CHARGING_STATE]
                 try:
-                    await client.disconnect()
-                except (BleakError, EOFError, TimeoutError) as err:
-                    _LOGGER.debug("Error while disconnecting: %s", err)
+                    data.charging_state = ChargingState(raw)
+                except ValueError:
+                    _LOGGER.debug("Unknown charging state %s", raw)
 
-    async def _async_read_all(self, client: BleakClient) -> UprightGo2Data:
-        data = UprightGo2Data()
+            # Seed the notification-backed values on the first pass, so the
+            # entities are populated before anything moves.
+            if data.posture is None and (posture := await self._read(
+                CHAR_POSTURE_STATUS
+            )):
+                try:
+                    data.posture = PostureState(posture[0])
+                except ValueError:
+                    _LOGGER.debug("Unknown posture state %s", posture[0])
 
-        if (power_first := await self._read(client, CHAR_POWER_DATA_FIRST)) and len(
-            power_first
-        ) > OFFSET_BATTERY_LEVEL:
-            data.battery_level = power_first[OFFSET_BATTERY_LEVEL]
+            if data.angle is None and (angle := await self._read(CHAR_SMOOTH_ANGLE)):
+                data.angle = decode_angle(angle)
 
-        if (power_second := await self._read(client, CHAR_POWER_DATA_SECOND)) and len(
-            power_second
-        ) > OFFSET_CHARGING_STATE:
-            raw = power_second[OFFSET_CHARGING_STATE]
-            try:
-                data.charging_state = ChargingState(raw)
-            except ValueError:
-                _LOGGER.debug("Unknown charging state %s", raw)
+            if vibration := await self._read(CHAR_VIBRATION_STATUS):
+                data.vibration_on = vibration[0] == VibrationMode.ON
 
-        if posture := await self._read(client, CHAR_POSTURE_STATUS):
-            try:
-                data.posture = PostureState(posture[0])
-            except ValueError:
-                _LOGGER.debug("Unknown posture state %s", posture[0])
+            if errors := await self._read(CHAR_ERRORS):
+                (
+                    data.errors,
+                    data.malfunction,
+                    data.shutdown_reason,
+                    data.reset_reasons,
+                ) = decode_errors(errors)
 
-        if angle := await self._read(client, CHAR_SMOOTH_ANGLE):
-            data.angle = decode_angle(angle)
+            if (freestyle := await self._read(CHAR_FREESTYLE_SETTING)) and len(
+                freestyle
+            ) >= FREESTYLE_LENGTH:
+                data.sensitivity_range = freestyle[OFFSET_RANGE]
+                delay_raw = freestyle[OFFSET_DELAY_LOW] | (
+                    freestyle[OFFSET_DELAY_HIGH] << 8
+                )
+                data.delay_seconds = delay_raw // DELAY_MULTIPLIER
+                try:
+                    data.vibration_pattern = VibrationPattern(
+                        freestyle[OFFSET_VIB_PATTERN]
+                    )
+                except ValueError:
+                    _LOGGER.debug("Unknown pattern %s", freestyle[OFFSET_VIB_PATTERN])
+                data.vibration_strength = freestyle[OFFSET_VIB_STRENGTH]
+                data.backwards_slouch_range = freestyle[OFFSET_BACKWARDS_SLOUCH_RANGE]
 
-        if vibration := await self._read(client, CHAR_VIBRATION_STATUS):
-            data.vibration_on = vibration[0] == VibrationMode.ON
+            if not self._static_info:
+                self._static_info = {
+                    "serial_number": self._decode_text(
+                        await self._read(CHAR_SERIAL_NUMBER)
+                    ),
+                    "firmware_version": self._decode_text(
+                        await self._read(CHAR_FW_VERSION)
+                    ),
+                    "hardware_version": self._decode_text(
+                        await self._read(CHAR_HW_VERSION)
+                    ),
+                }
+            data.serial_number = self._static_info.get("serial_number")
+            data.firmware_version = self._static_info.get("firmware_version")
+            data.hardware_version = self._static_info.get("hardware_version")
 
-        if errors := await self._read(client, CHAR_ERRORS):
-            (
-                data.errors,
-                data.malfunction,
-                data.shutdown_reason,
-                data.reset_reasons,
-            ) = decode_errors(errors)
+            return data
 
-        if (freestyle := await self._read(client, CHAR_FREESTYLE_SETTING)) and len(
-            freestyle
-        ) >= FREESTYLE_LENGTH:
-            data.sensitivity_range = freestyle[OFFSET_RANGE]
-            delay_raw = freestyle[OFFSET_DELAY_LOW] | (
-                freestyle[OFFSET_DELAY_HIGH] << 8
-            )
-            data.delay_seconds = delay_raw // DELAY_MULTIPLIER
-            try:
-                data.vibration_pattern = VibrationPattern(freestyle[OFFSET_VIB_PATTERN])
-            except ValueError:
-                _LOGGER.debug("Unknown pattern %s", freestyle[OFFSET_VIB_PATTERN])
-            data.vibration_strength = freestyle[OFFSET_VIB_STRENGTH]
-            data.backwards_slouch_range = freestyle[OFFSET_BACKWARDS_SLOUCH_RANGE]
-
-        # Device information never changes; read it once and cache it.
-        if not self._static_info:
-            self._static_info = {
-                "serial_number": self._decode_text(
-                    await self._read(client, CHAR_SERIAL_NUMBER)
-                ),
-                "firmware_version": self._decode_text(
-                    await self._read(client, CHAR_FW_VERSION)
-                ),
-                "hardware_version": self._decode_text(
-                    await self._read(client, CHAR_HW_VERSION)
-                ),
-            }
-        data.serial_number = self._static_info.get("serial_number")
-        data.firmware_version = self._static_info.get("firmware_version")
-        data.hardware_version = self._static_info.get("hardware_version")
-
-        return data
+    # --- writes -------------------------------------------------------------
 
     async def _async_write(self, uuid: str, payload: bytes) -> None:
-        """Connect and write a single characteristic."""
+        """Write a single characteristic over the live connection."""
+        if not self.connected:
+            await self.async_connect()
         async with self._lock:
+            if self._client is None:
+                raise UprightGo2Error("Not connected")
             try:
-                client = await self._connect()
-            except (BleakError, TimeoutError) as err:
-                raise UprightGo2Error(
-                    f"Could not connect to {self._ble_device.address}: {err}"
-                ) from err
-            try:
-                await client.write_gatt_char(uuid, payload, response=True)
+                await self._client.write_gatt_char(uuid, payload, response=True)
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"Could not write {uuid}: {err}") from err
-            finally:
-                try:
-                    await client.disconnect()
-                except (BleakError, EOFError, TimeoutError) as err:
-                    _LOGGER.debug("Error while disconnecting: %s", err)
 
     async def async_calibrate(self) -> None:
         """Set the current pose as the upright reference."""
@@ -302,12 +424,11 @@ class UprightGo2Client:
         """Turn the slouch buzz on or off."""
         mode = VibrationMode.ON if enabled else VibrationMode.OFF
         await self._async_write(CHAR_VIBRATION_STATUS, bytes([mode]))
+        self.data.vibration_on = enabled
 
     async def async_deep_sleep(self) -> None:
         """Put the device into deep sleep."""
-        await self._async_write(
-            CHAR_HAL_CONTROL, bytes([HalControlCommand.DEEP_SLEEP])
-        )
+        await self._async_write(CHAR_HAL_CONTROL, bytes([HalControlCommand.DEEP_SLEEP]))
 
     async def async_update_freestyle(self, **changes: int) -> None:
         """Read the freestyle block, apply changes, and write it back.
@@ -315,43 +436,36 @@ class UprightGo2Client:
         The block is written whole, so it has to be read first: writing a
         partial buffer would clear the settings we are not touching.
         """
+        if not self.connected:
+            await self.async_connect()
+
         async with self._lock:
-            try:
-                client = await self._connect()
-            except (BleakError, TimeoutError) as err:
-                raise UprightGo2Error(
-                    f"Could not connect to {self._ble_device.address}: {err}"
-                ) from err
-            try:
-                current = await self._read(client, CHAR_FREESTYLE_SETTING)
-                if not current or len(current) < FREESTYLE_LENGTH:
-                    raise UprightGo2Error("Device did not return freestyle settings")
+            if self._client is None:
+                raise UprightGo2Error("Not connected")
 
-                payload = bytearray(current)
-                if (value := changes.get("sensitivity_range")) is not None:
-                    payload[OFFSET_RANGE] = max(
-                        GO_RANGE_MIN, min(GO_RANGE_MAX, int(value))
-                    )
-                if (value := changes.get("delay_seconds")) is not None:
-                    raw = int(value) * DELAY_MULTIPLIER
-                    payload[OFFSET_DELAY_LOW] = raw % 256
-                    payload[OFFSET_DELAY_HIGH] = raw // 256
-                if (value := changes.get("vibration_pattern")) is not None:
-                    payload[OFFSET_VIB_PATTERN] = int(value)
-                if (value := changes.get("vibration_strength")) is not None:
-                    payload[OFFSET_VIB_STRENGTH] = int(value)
-                if (value := changes.get("stop_periods")) is not None:
-                    payload[OFFSET_STOP_PERIODS] = int(value)
-                if (value := changes.get("backwards_slouch_range")) is not None:
-                    payload[OFFSET_BACKWARDS_SLOUCH_RANGE] = int(value)
+            current = await self._read(CHAR_FREESTYLE_SETTING)
+            if not current or len(current) < FREESTYLE_LENGTH:
+                raise UprightGo2Error("Device did not return freestyle settings")
 
-                await client.write_gatt_char(
+            payload = bytearray(current)
+            if (value := changes.get("sensitivity_range")) is not None:
+                payload[OFFSET_RANGE] = max(GO_RANGE_MIN, min(GO_RANGE_MAX, int(value)))
+            if (value := changes.get("delay_seconds")) is not None:
+                raw = int(value) * DELAY_MULTIPLIER
+                payload[OFFSET_DELAY_LOW] = raw % 256
+                payload[OFFSET_DELAY_HIGH] = raw // 256
+            if (value := changes.get("vibration_pattern")) is not None:
+                payload[OFFSET_VIB_PATTERN] = int(value)
+            if (value := changes.get("vibration_strength")) is not None:
+                payload[OFFSET_VIB_STRENGTH] = int(value)
+            if (value := changes.get("stop_periods")) is not None:
+                payload[OFFSET_STOP_PERIODS] = int(value)
+            if (value := changes.get("backwards_slouch_range")) is not None:
+                payload[OFFSET_BACKWARDS_SLOUCH_RANGE] = int(value)
+
+            try:
+                await self._client.write_gatt_char(
                     CHAR_FREESTYLE_SETTING, bytes(payload), response=True
                 )
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"Could not write settings: {err}") from err
-            finally:
-                try:
-                    await client.disconnect()
-                except (BleakError, EOFError, TimeoutError) as err:
-                    _LOGGER.debug("Error while disconnecting: %s", err)

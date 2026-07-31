@@ -1,4 +1,9 @@
-"""Polling coordinator for the Upright GO 2."""
+"""Coordinator for the Upright GO 2.
+
+Posture and angle arrive as BLE notifications and are pushed straight into the
+coordinator; everything else is re-read on the slower interval over the same
+connection.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 
 
 class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
-    """Poll the device over BLE on a fixed interval."""
+    """Keep a live link to the device and surface its state."""
 
     config_entry: UprightGo2ConfigEntry
 
@@ -38,6 +43,13 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         )
         self._client: UprightGo2Client | None = None
 
+    def _handle_notification(self, data: UprightGo2Data) -> None:
+        """Push a notification-driven update to the entities.
+
+        Bleak may deliver this from a backend thread, so hop to the event loop.
+        """
+        self.hass.loop.call_soon_threadsafe(self.async_set_updated_data, data)
+
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
 
@@ -53,18 +65,25 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
                 " or proxy"
             )
         if self._client is None:
-            self._client = UprightGo2Client(ble_device)
+            self._client = UprightGo2Client(ble_device, self._handle_notification)
         else:
             self._client.set_ble_device(ble_device)
         return self._client
 
     async def _async_update_data(self) -> UprightGo2Data:
-        """Fetch a fresh snapshot from the device."""
+        """Reconnect if needed and refresh the non-notifying values."""
         client = self._get_client()
         try:
             return await client.async_poll()
         except UprightGo2Error as err:
             raise UpdateFailed(str(err)) from err
+
+    async def async_shutdown(self) -> None:
+        """Drop the connection when the entry unloads."""
+        await super().async_shutdown()
+        if self._client is not None:
+            await self._client.async_disconnect()
+            self._client = None
 
     async def async_run(self, action: str, **kwargs: int | bool) -> None:
         """Run a write action, then refresh so entities reflect the result."""

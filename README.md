@@ -63,15 +63,32 @@ add it via **Add integration → Upright GO 2**.
 If nothing shows up, move the device to wake it: the GO 2 stops advertising
 when it has been still for a while.
 
-## Polling
+## How it stays up to date
 
-The GO 2 accepts **one Bluetooth connection at a time**. The integration
-therefore connects, reads everything, and disconnects again, rather than
-holding the link open. Default interval is 5 minutes; change it under the
-integration's **Configure** menu (60–3600 s).
+Posture and posture angle arrive as **BLE notifications**, so they update in
+real time as you move — the same mechanism the official app uses. The device
+only reports posture while a subscriber is attached, which is also what makes
+the slouch vibration fire, so the integration keeps the connection open.
 
-While a poll is in flight the phone app cannot connect, and vice versa — if the
-official app is connected, polls will fail until it disconnects.
+Battery, charging state, errors and the settings have no notification, so they
+are re-read on a slower tick over that same connection. Default is 5 minutes;
+change it under the integration's **Configure** menu (60–3600 s).
+
+**Trade-off:** the GO 2 accepts only **one Bluetooth connection at a time**.
+While Home Assistant is connected, the phone app cannot connect — and if the
+app grabs the device first, Home Assistant will keep retrying with backoff
+until it is released. Disable the integration entry if you need the app.
+
+### Why isn't it vibrating?
+
+- The device must be **calibrated** — press the *Calibrate* button while
+  sitting upright.
+- The buzz only fires after the **vibration delay** has elapsed while you are
+  still slouching. Check the *Vibration delay* number; 15 s is a common
+  default, so a quick lean will not trigger it.
+- *Posture sensitivity* sets how far you may lean before it counts as a
+  slouch (1–6). Lower it if it feels too forgiving.
+- The *Vibration* switch must be on.
 
 ## Protocol
 
