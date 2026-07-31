@@ -24,7 +24,7 @@
         "data": {
           "scan_interval": "Polling interval"
         },
-        "description": "How often to connect and read the device. Each poll briefly occupies the device's single Bluetooth connection slot, so the phone app cannot connect at the same moment. Longer intervals save battery."
+        "description": "How often to re-read battery, settings and errors. Posture and angle are not polled — they stream over BLE notifications. The connection is held open, so the phone app cannot connect while Home Assistant is attached."
       }
     }
   },
@@ -32,6 +32,9 @@
     "binary_sensor": {
       "slouching": {
         "name": "Slouching"
+      },
+      "device_error": {
+        "name": "Device error"
       }
     },
     "button": {

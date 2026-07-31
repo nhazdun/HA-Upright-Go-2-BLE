@@ -100,10 +100,21 @@ DELAY_MULTIPLIER         = 10
 
 | Offset | Field           |
 |--------|-----------------|
-| 0      | `BATTERY_LEVEL` (percent) |
+| 0      | `BATTERY_LEVEL` (level index — **not** a percentage) |
 | 4      | `TILE_FLAGS`    |
 
-`LOW_BATTERY_VALUE = 10`.
+Byte 0 is a small level index that `translateBatteryLevelToPercent` maps to a
+percentage:
+
+```
+0        -> null (unknown)
+1        -> 0 %
+2        -> 5 %
+n >= 3   -> (n - 2) * 10 %
+```
+
+So a full battery reports `12`. `LOW_BATTERY_VALUE = 10` is compared against
+the translated percentage.
 
 ### `bad2` POWER_DATA_SECOND — read
 
@@ -236,9 +247,15 @@ Lower value means a stronger buzz.
 
 `DefVibPattern`: `GOS_DEFAULT = MEDIUM (1)`, `GO2_DEFAULT = KNOCK (4)`.
 
-### `bab5` VIBRATION_STATUS — read / write
+### `bab5` VIBRATION_STATUS — read / write / notify
 
 `VibrationMode`: `ON=0`, `OFF=1`.
+
+The write payload is the mode **twice** — the app calls
+`setVibrationState(new Uint8Array([v, v]))`. A single byte is ignored.
+
+The app also subscribes to this characteristic (`monitorCharacteristic`) rather
+than only reading it.
 
 ## TEST service
 

@@ -39,8 +39,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: UprightGo2ConfigEntry) -
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: UprightGo2ConfigEntry) -> bool:
-    """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a config entry, releasing the device's single connection slot."""
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await entry.runtime_data.async_shutdown()
+    return unloaded
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: UprightGo2ConfigEntry) -> None:

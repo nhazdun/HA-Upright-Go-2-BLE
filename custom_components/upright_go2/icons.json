@@ -6,6 +6,9 @@
         "state": {
           "off": "mdi:human-handsup"
         }
+      },
+      "device_error": {
+        "default": "mdi:alert-circle-outline"
       }
     },
     "button": {

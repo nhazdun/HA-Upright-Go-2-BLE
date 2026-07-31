@@ -25,6 +25,7 @@ class UprightGo2BinarySensorDescription(BinarySensorEntityDescription):
     """Describes an Upright GO 2 binary sensor."""
 
     value_fn: Callable[[UprightGo2Data], bool | None]
+    attrs_fn: Callable[[UprightGo2Data], dict[str, object]] | None = None
 
 
 BINARY_SENSORS: tuple[UprightGo2BinarySensorDescription, ...] = (
@@ -56,11 +57,22 @@ BINARY_SENSORS: tuple[UprightGo2BinarySensorDescription, ...] = (
             else None
         ),
     ),
+    # Opt-in: the error decoding is derived from the app but has never been
+    # seen against a device that actually reports a fault, so it stays off by
+    # default rather than raising a bare "Problem" nobody can act on.
     UprightGo2BinarySensorDescription(
         key="problem",
+        translation_key="device_error",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda data: bool(data.errors),
+        attrs_fn=lambda data: {
+            "errors": data.errors,
+            "malfunction": data.malfunction,
+            "shutdown_reason": data.shutdown_reason,
+            "reset_reasons": data.reset_reasons,
+        },
     ),
 )
 
@@ -96,3 +108,10 @@ class UprightGo2BinarySensor(UprightGo2Entity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return the current state."""
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return any extra detail this sensor carries."""
+        if (attrs_fn := self.entity_description.attrs_fn) is None:
+            return None
+        return attrs_fn(self.coordinator.data)

@@ -94,6 +94,21 @@ class UprightGo2Data:
     hardware_version: str | None = None
 
 
+def translate_battery_level(raw: int) -> int | None:
+    """Convert the raw battery level byte to a percentage.
+
+    The byte is a small level index, not a percentage — the app maps it with
+    translateBatteryLevelToPercent. A full battery reports 12, which is 100 %.
+    """
+    if raw == 0:
+        return None
+    if raw == 1:
+        return 0
+    if raw == 2:
+        return 5
+    return min((raw - 2) * 10, 100)
+
+
 def decode_angle(payload: bytes) -> float | None:
     """Decode SMOOTH_ANGLE: signed 16-bit little-endian, tenths of a degree."""
     if len(payload) < 2:
@@ -324,7 +339,9 @@ class UprightGo2Client:
             if (power_first := await self._read(CHAR_POWER_DATA_FIRST)) and len(
                 power_first
             ) > OFFSET_BATTERY_LEVEL:
-                data.battery_level = power_first[OFFSET_BATTERY_LEVEL]
+                data.battery_level = translate_battery_level(
+                    power_first[OFFSET_BATTERY_LEVEL]
+                )
 
             if (power_second := await self._read(CHAR_POWER_DATA_SECOND)) and len(
                 power_second
@@ -421,9 +438,13 @@ class UprightGo2Client:
         )
 
     async def async_set_vibration(self, enabled: bool) -> None:
-        """Turn the slouch buzz on or off."""
+        """Turn the slouch buzz on or off.
+
+        The app writes the mode twice — `new Uint8Array([v, v])`. A single byte
+        is silently ignored by the device, so the length matters.
+        """
         mode = VibrationMode.ON if enabled else VibrationMode.OFF
-        await self._async_write(CHAR_VIBRATION_STATUS, bytes([mode]))
+        await self._async_write(CHAR_VIBRATION_STATUS, bytes([mode, mode]))
         self.data.vibration_on = enabled
 
     async def async_deep_sleep(self) -> None:
