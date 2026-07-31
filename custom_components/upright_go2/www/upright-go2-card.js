@@ -60,9 +60,30 @@ class UprightGo2Card extends HTMLElement {
     return { columns: 12, rows: 8, min_columns: 6 };
   }
 
+  /** The entity keys this card reads, in a stable order. */
+  static get WATCHED() {
+    return [
+      "angle", "slouching", "battery", "upright_time",
+      "slouching_time", "vibration", "delay",
+    ];
+  }
+
   set hass(hass) {
     this._hass = hass;
     if (!this._built) this._build();
+
+    // Home Assistant sets `hass` on every state change anywhere in the
+    // instance, which on a busy system is many times a second. Re-rendering
+    // each time thrashed the DOM and made the figure stutter, so bail out
+    // unless something this card actually shows has moved.
+    const signature = UprightGo2Card.WATCHED.map((key) => {
+      const id = this._config[key];
+      const s = id ? hass.states[id] : undefined;
+      return s ? s.state : "";
+    }).join("|");
+    if (signature === this._signature) return;
+    this._signature = signature;
+
     this._render();
   }
 
@@ -122,14 +143,18 @@ class UprightGo2Card extends HTMLElement {
         svg { width: 100%; height: 100%; max-height: 320px; overflow: visible; }
         .ring-track { stroke: var(--divider-color, #e3e3e3); }
         .ring {
-          transition: stroke-dashoffset .5s ease, stroke .4s ease;
+          transition: stroke-dashoffset .8s linear, stroke .25s ease;
           stroke-linecap: round;
         }
         #figure {
-          transition: transform .45s cubic-bezier(.22,.61,.36,1);
+          transition: transform .8s linear;
           transform-origin: 100px 168px;
+          will-change: transform;
         }
-        #figure path, #figure circle { transition: fill .4s ease; }
+        #figure path, #figure circle { transition: fill .25s ease; }
+        @media (prefers-reduced-motion: reduce) {
+          .ring, #figure, #figure path, #figure circle { transition: none; }
+        }
         .angle {
           font-size: 13px;
           fill: var(--secondary-text-color);
@@ -247,6 +272,16 @@ class UprightGo2Card extends HTMLElement {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
+  _set(node, prop, value) {
+    // Writing an unchanged style still costs a style recalculation.
+    if (this._last === undefined) this._last = new Map();
+    const key = `${node.id}.${prop}`;
+    if (this._last.get(key) === value) return;
+    this._last.set(key, value);
+    if (prop === "text") node.textContent = value;
+    else node.style[prop] = value;
+  }
+
   _render() {
     const el = this._el;
     const cfg = this._config;
@@ -264,20 +299,17 @@ class UprightGo2Card extends HTMLElement {
 
     // The ring fills as posture degrades, matching the app's behaviour.
     const filled = known ? 0.15 + ratio * 0.85 : 0;
-    el.ring.setAttribute(
-      "stroke-dashoffset",
-      `${this._circumference * (1 - filled)}`,
-    );
-    el.ring.style.stroke = slouching ? RED : GREEN;
+    this._set(el.ring, "strokeDashoffset", `${this._circumference * (1 - filled)}`);
+    this._set(el.ring, "stroke", slouching ? RED : GREEN);
 
-    el.figure.style.transform = `rotate(${(ratio * cfg.max_tilt).toFixed(1)}deg)`;
+    this._set(el.figure, "transform", `rotate(${(ratio * cfg.max_tilt).toFixed(1)}deg)`);
     const solid = slouching ? RED : GREEN;
     const soft = slouching ? RED_SOFT : GREEN_SOFT;
-    el.head.style.fill = soft;
-    el.body.style.fill = solid;
-    el.belly.style.fill = soft;
+    this._set(el.head, "fill", soft);
+    this._set(el.body, "fill", solid);
+    this._set(el.belly, "fill", soft);
 
-    el.angle.textContent = angle === undefined ? "" : `${angle.toFixed(1)}°`;
+    this._set(el.angle, "text", angle === undefined ? "" : `${angle.toFixed(1)}°`);
 
     const battery = this._num("battery");
     let label;
@@ -291,8 +323,8 @@ class UprightGo2Card extends HTMLElement {
       : "var(--secondary-background-color)";
     el.pill.style.color = known ? (slouching ? RED : GREEN) : "var(--secondary-text-color)";
 
-    el.tUp.textContent = this._duration("upright_time");
-    el.tDown.textContent = this._duration("slouching_time");
+    this._set(el.tUp, "text", this._duration("upright_time"));
+    this._set(el.tDown, "text", this._duration("slouching_time"));
 
     const vib = this._state("vibration");
     const vibOn = vib ? vib.state === "on" : undefined;

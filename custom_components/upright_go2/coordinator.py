@@ -139,9 +139,17 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
 
-        The device may hop between the local adapter and a proxy, so the
-        BLEDevice is looked up fresh rather than cached.
+        A connected peripheral stops advertising, so once the link is up the
+        address drops out of the Bluetooth manager's cache and the lookup below
+        returns nothing. Trusting that would fail every button press and switch
+        toggle with "not in range" while the device is plainly streaming — so
+        a live client is handed back as-is.
         """
+        if self._client is not None and self._client.connected:
+            return self._client
+
+        # Not connected: look the device up fresh, since it may have moved
+        # between the local adapter and a proxy.
         ble_device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
