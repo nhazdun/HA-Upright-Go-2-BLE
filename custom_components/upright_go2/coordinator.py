@@ -182,6 +182,7 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
                     "source": DOMAIN,
                     "statistic_id": statistic_id,
                     "unit_of_measurement": UnitOfTime.SECONDS,
+                    "unit_class": "duration",
                 },
                 stats,
             )

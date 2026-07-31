@@ -91,6 +91,73 @@ def decode_angle_pair(low: int, high: int) -> float:
     return struct.unpack("<h", bytes([low, high]))[0] / 10
 
 
+class StreamFramer:
+    """Frames the offline stream incrementally as packets arrive.
+
+    Framing has to be stateful: `0xFF` only ends the stream when it lands on an
+    interval slot. Inside a session header it is ordinary data — the timestamp
+    alone can contain it — so a download must not stop at the first `0xFF` it
+    sees in a packet.
+    """
+
+    def __init__(self, frequency: int, clock_offset: float) -> None:
+        """Initialise the framer for one download."""
+        self._frequency = frequency
+        self._seconds = interval_seconds(frequency)
+        self._clock_offset = clock_offset
+        self._buffer = bytearray()
+        self._index = 0
+        self._session_start: datetime | None = None
+        self._position = 0
+        self.intervals: list[Interval] = []
+        self.complete = False
+
+    def feed(self, chunk: bytes) -> None:
+        """Add a packet and frame whatever is now complete."""
+        self._buffer += chunk
+        self._drain()
+
+    def _drain(self) -> None:
+        while not self.complete and self._index < len(self._buffer):
+            byte = self._buffer[self._index]
+
+            if is_end_of_data(byte):
+                self.complete = True
+                return
+
+            if is_session_header(self._frequency, byte):
+                if len(self._buffer) - self._index < SESSION_HEADER_LENGTH:
+                    return  # wait for the rest of the header
+                header = bytes(
+                    self._buffer[self._index : self._index + SESSION_HEADER_LENGTH]
+                )
+                raw = decode_session_timestamp(header)
+                self._session_start = (
+                    datetime.fromtimestamp(raw + self._clock_offset, UTC)
+                    if raw is not None
+                    else None
+                )
+                self._position = 0
+                self._index += SESSION_HEADER_LENGTH
+                continue
+
+            if self._session_start is not None:
+                self.intervals.append(
+                    Interval(
+                        start=self._session_start
+                        + timedelta(seconds=self._position * self._seconds),
+                        duration=self._seconds,
+                        slouching=bool((byte >> 7) & 1),
+                        vibrating=bool((byte >> 6) & 1),
+                        movement=(byte >> 4) & 0x03,
+                        vibration_count=byte & 0x07,
+                    )
+                )
+                self._position += 1
+
+            self._index += 1
+
+
 def parse_stream(
     stream: bytes,
     frequency: int,
@@ -101,48 +168,16 @@ def parse_stream(
     `clock_offset` is `wall_clock_now - device_timestamp_now`, so device
     timestamps land on real time whatever epoch the firmware counts from.
     """
-    seconds = interval_seconds(frequency)
-    intervals: list[Interval] = []
-    session_start: datetime | None = None
-    index = 0
-    position = 0
+    framer = StreamFramer(frequency, clock_offset)
+    framer.feed(stream)
+    return framer.intervals
 
-    while index < len(stream):
-        byte = stream[index]
 
-        if is_end_of_data(byte):
-            break
-
-        if is_session_header(frequency, byte):
-            header = stream[index : index + SESSION_HEADER_LENGTH]
-            if len(header) < SESSION_HEADER_LENGTH:
-                break
-            raw = decode_session_timestamp(header)
-            session_start = (
-                datetime.fromtimestamp(raw + clock_offset, UTC)
-                if raw is not None
-                else None
-            )
-            position = 0
-            index += SESSION_HEADER_LENGTH
-            continue
-
-        if session_start is not None:
-            intervals.append(
-                Interval(
-                    start=session_start + timedelta(seconds=position * seconds),
-                    duration=seconds,
-                    slouching=bool((byte >> 7) & 1),
-                    vibrating=bool((byte >> 6) & 1),
-                    movement=(byte >> 4) & 0x03,
-                    vibration_count=byte & 0x07,
-                )
-            )
-            position += 1
-
-        index += 1
-
-    return intervals
+def decode_data_amount(payload: bytes) -> int | None:
+    """Decode DATA_AMOUNT: how many records the device is holding."""
+    if len(payload) < 3:
+        return None
+    return payload[0] | (payload[1] << 8) | (payload[2] << 16)
 
 
 def summarise(intervals: list[Interval], tzinfo: object = None) -> HistorySummary:

@@ -18,14 +18,15 @@ from bleak_retry_connector import establish_connection
 
 from .const import (
     CHAR_CURRENT_TIMESTAMP,
+    CHAR_DATA_AMOUNT,
     CHAR_DATA_COMMAND,
     CHAR_ERRORS,
     CHAR_FREESTYLE_SETTING,
-    CHAR_GENERAL_SETTING,
-    CHAR_OFFLINE_DATA,
     CHAR_FW_VERSION,
+    CHAR_GENERAL_SETTING,
     CHAR_HAL_CONTROL,
     CHAR_HW_VERSION,
+    CHAR_OFFLINE_DATA,
     CHAR_POSTURE_STATUS,
     CHAR_POWER_DATA_FIRST,
     CHAR_POWER_DATA_SECOND,
@@ -36,7 +37,6 @@ from .const import (
     DEFAULT_INTERVAL_FREQUENCY,
     DELAY_MULTIPLIER,
     DEVICE_ERRORS,
-    END_OF_DATA,
     FREESTYLE_LENGTH,
     GO_RANGE_MAX,
     GO_RANGE_MIN,
@@ -64,7 +64,12 @@ from .const import (
     VibrationMode,
     VibrationPattern,
 )
-from .history import Interval, decode_session_timestamp, parse_stream
+from .history import (
+    Interval,
+    StreamFramer,
+    decode_data_amount,
+    decode_session_timestamp,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -520,17 +525,28 @@ class UprightGo2Client:
                 if device_now:
                     clock_offset = time.time() - device_now
 
-            chunks: list[bytes] = []
+            expected: int | None = None
+            if amount := await self._read(CHAR_DATA_AMOUNT):
+                expected = decode_data_amount(amount)
+
+            framer = StreamFramer(frequency, clock_offset)
             finished = asyncio.Event()
             failure: Exception | None = None
+            packets = 0
 
             def on_packet(_char: BleakGATTCharacteristic, payload: bytearray) -> None:
-                nonlocal failure
-                data = bytes(payload)
-                chunks.append(data)
-                if END_OF_DATA in data:
+                nonlocal failure, packets
+                packets += 1
+                framer.feed(bytes(payload))
+
+                # 0xFF only ends the stream when the framer meets it on an
+                # interval slot — inside a session header it is ordinary data.
+                if framer.complete or (
+                    expected is not None and len(framer.intervals) >= expected
+                ):
                     finished.set()
                     return
+
                 # Ask for the next packet; the device will not send unprompted.
                 task = asyncio.create_task(
                     self._client.write_gatt_char(  # type: ignore[union-attr]
@@ -542,6 +558,8 @@ class UprightGo2Client:
 
                 def _check(done: asyncio.Task[None]) -> None:
                     nonlocal failure
+                    if done.cancelled():
+                        return
                     if (err := done.exception()) is not None:
                         failure = err
                         finished.set()
@@ -564,10 +582,13 @@ class UprightGo2Client:
                 try:
                     await asyncio.wait_for(finished.wait(), timeout)
                 except TimeoutError:
-                    _LOGGER.debug(
-                        "History download stopped after %ss with %d packets",
+                    _LOGGER.warning(
+                        "History download timed out after %ss: %d packets, %d of %s"
+                        " records. Keeping what arrived.",
                         timeout,
-                        len(chunks),
+                        packets,
+                        len(framer.intervals),
+                        expected if expected is not None else "?",
                     )
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"History download failed: {err}") from err
@@ -577,10 +598,16 @@ class UprightGo2Client:
                 except (BleakError, EOFError, TimeoutError) as err:
                     _LOGGER.debug("Could not stop the history stream: %s", err)
 
-            if failure is not None:
+            if failure is not None and not framer.intervals:
                 raise UprightGo2Error(f"History download failed: {failure}")
 
-            return parse_stream(b"".join(chunks), frequency, clock_offset)
+            _LOGGER.debug(
+                "History: %d packets, %d records (device reported %s)",
+                packets,
+                len(framer.intervals),
+                expected,
+            )
+            return framer.intervals
 
     async def async_clear_history(self) -> None:
         """Erase the stored history on the device."""
