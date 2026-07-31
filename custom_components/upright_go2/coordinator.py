@@ -120,6 +120,14 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         except UprightGo2Error as err:
             raise UpdateFailed(str(err)) from err
 
+        # Bank live time on every tick, not only when posture changes.
+        # POSTURE_STATUS only notifies on a change, so sitting straight for an
+        # hour produces no events — and a span that long would then be thrown
+        # away as an implausible gap.
+        if data.posture is not None:
+            self._live.update(data.posture is PostureState.SLOUCH, dt_util.utcnow())
+            self._refresh_today(data)
+
         due = data.history_synced is None or (
             dt_util.utcnow() - data.history_synced >= self._history_interval
         )
@@ -223,6 +231,7 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
 
     async def async_shutdown(self) -> None:
         """Drop the connection when the entry unloads."""
+        self._live.pause(dt_util.utcnow())
         await super().async_shutdown()
         if self._client is not None:
             await self._client.async_disconnect()
