@@ -249,7 +249,11 @@ class LiveTracker:
 
     def __init__(self) -> None:
         """Start with nothing recorded."""
-        self.buckets: dict[datetime, list[int]] = {}
+        # Seconds are kept as floats. Credits arrive on every notification —
+        # often several per second — so rounding each one to a whole second
+        # threw away everything: a 0.4 s credit truncated to 0, and the totals
+        # never moved off zero.
+        self.buckets: dict[datetime, list[float]] = {}
         self._since: datetime | None = None
         self._slouching: bool | None = None
 
@@ -281,19 +285,19 @@ class LiveTracker:
             hour = cursor.replace(minute=0, second=0, microsecond=0)
             boundary = hour + timedelta(hours=1)
             chunk = min(end, boundary) - cursor
-            bucket = self.buckets.setdefault(hour, [0, 0])
-            bucket[position] += int(chunk.total_seconds())
+            bucket = self.buckets.setdefault(hour, [0.0, 0.0])
+            bucket[position] += chunk.total_seconds()
             cursor = min(end, boundary)
 
     def totals_for(self, day: str, tzinfo: object = None) -> tuple[int, int]:
         """Return (slouching, upright) seconds banked for a local day."""
-        slouch = upright = 0
+        slouch = upright = 0.0
         for hour, (s, u) in self.buckets.items():
             moment = hour.astimezone(tzinfo) if tzinfo else hour
             if moment.date().isoformat() == day:
                 slouch += s
                 upright += u
-        return slouch, upright
+        return round(slouch), round(upright)
 
     def prune(self, before: datetime) -> None:
         """Drop buckets older than the cutoff to keep memory bounded."""
@@ -303,7 +307,7 @@ class LiveTracker:
 
 def merge_buckets(
     offline: dict[datetime, tuple[int, int]],
-    live: dict[datetime, list[int]],
+    live: dict[datetime, list[float]],
 ) -> dict[datetime, tuple[int, int]]:
     """Combine stored-history and live buckets, taking the larger of each.
 
@@ -314,7 +318,10 @@ def merge_buckets(
     merged: dict[datetime, tuple[int, int]] = dict(offline)
     for hour, (slouch, upright) in live.items():
         existing = merged.get(hour, (0, 0))
-        merged[hour] = (max(existing[0], slouch), max(existing[1], upright))
+        merged[hour] = (
+            max(existing[0], round(slouch)),
+            max(existing[1], round(upright)),
+        )
     return merged
 
 
