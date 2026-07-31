@@ -23,7 +23,6 @@ from .const import (
     CHAR_ERRORS,
     CHAR_FREESTYLE_SETTING,
     CHAR_FW_VERSION,
-    CHAR_GENERAL_SETTING,
     CHAR_HAL_CONTROL,
     CHAR_HW_VERSION,
     CHAR_OFFLINE_DATA,
@@ -34,7 +33,6 @@ from .const import (
     CHAR_SMOOTH_ANGLE,
     CHAR_START_CALIBRATION,
     CHAR_VIBRATION_STATUS,
-    DEFAULT_INTERVAL_FREQUENCY,
     DELAY_MULTIPLIER,
     DEVICE_ERRORS,
     FREESTYLE_LENGTH,
@@ -69,6 +67,8 @@ from .history import (
     StreamFramer,
     decode_data_amount,
     decode_session_timestamp,
+    detect_frequency,
+    expected_stream_length,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -513,10 +513,6 @@ class UprightGo2Client:
             if self._client is None:
                 raise UprightGo2Error("Not connected")
 
-            frequency = DEFAULT_INTERVAL_FREQUENCY
-            if (general := await self._read(CHAR_GENERAL_SETTING)) and general:
-                frequency = general[0]
-
             # Anchor the device clock against wall time so the timestamps in
             # the dump land on real dates whatever epoch the firmware uses.
             clock_offset = 0.0
@@ -525,11 +521,22 @@ class UprightGo2Client:
                 if device_now:
                     clock_offset = time.time() - device_now
 
-            expected: int | None = None
+            records: int | None = None
+            sessions: int | None = None
             if amount := await self._read(CHAR_DATA_AMOUNT):
-                expected = decode_data_amount(amount)
+                records, sessions = decode_data_amount(amount)
 
-            framer = StreamFramer(frequency, clock_offset)
+            # Drive the download by how many bytes the device says it holds
+            # rather than by an end marker. Framing is ambiguous until the
+            # whole dump is in hand, so a marker spotted mid-stream may not be
+            # one — that is what cut earlier downloads short.
+            wanted = (
+                expected_stream_length(records, sessions)
+                if records is not None
+                else None
+            )
+
+            buffer = bytearray()
             finished = asyncio.Event()
             failure: Exception | None = None
             packets = 0
@@ -537,13 +544,9 @@ class UprightGo2Client:
             def on_packet(_char: BleakGATTCharacteristic, payload: bytearray) -> None:
                 nonlocal failure, packets
                 packets += 1
-                framer.feed(bytes(payload))
+                buffer.extend(payload)
 
-                # 0xFF only ends the stream when the framer meets it on an
-                # interval slot — inside a session header it is ordinary data.
-                if framer.complete or (
-                    expected is not None and len(framer.intervals) >= expected
-                ):
+                if not payload or (wanted is not None and len(buffer) >= wanted):
                     finished.set()
                     return
 
@@ -583,12 +586,12 @@ class UprightGo2Client:
                     await asyncio.wait_for(finished.wait(), timeout)
                 except TimeoutError:
                     _LOGGER.warning(
-                        "History download timed out after %ss: %d packets, %d of %s"
-                        " records. Keeping what arrived.",
+                        "History download timed out after %ss: %d packets, %d of"
+                        " ~%s bytes. Keeping what arrived.",
                         timeout,
                         packets,
-                        len(framer.intervals),
-                        expected if expected is not None else "?",
+                        len(buffer),
+                        wanted if wanted is not None else "?",
                     )
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"History download failed: {err}") from err
@@ -598,14 +601,24 @@ class UprightGo2Client:
                 except (BleakError, EOFError, TimeoutError) as err:
                     _LOGGER.debug("Could not stop the history stream: %s", err)
 
-            if failure is not None and not framer.intervals:
+            if failure is not None and not buffer:
                 raise UprightGo2Error(f"History download failed: {failure}")
 
+            frequency, intervals = detect_frequency(bytes(buffer), records)
+
+            # Re-frame with the detected nibble so the timestamps are anchored.
+            framer = StreamFramer(frequency, clock_offset)
+            framer.feed(bytes(buffer))
+
             _LOGGER.debug(
-                "History: %d packets, %d records (device reported %s)",
+                "History: %d packets, %d bytes (device reported %s records in %s"
+                " sessions); framed %d records with header nibble %s",
                 packets,
+                len(buffer),
+                records,
+                sessions,
                 len(framer.intervals),
-                expected,
+                frequency,
             )
             return framer.intervals
 

@@ -173,11 +173,56 @@ def parse_stream(
     return framer.intervals
 
 
-def decode_data_amount(payload: bytes) -> int | None:
-    """Decode DATA_AMOUNT: how many records the device is holding."""
+def decode_data_amount(payload: bytes) -> tuple[int | None, int | None]:
+    """Decode DATA_AMOUNT into (records, sessions).
+
+    Bytes 0-2 are the record count; byte 3 is the number of stored sessions,
+    which the app reads as expectedOfflineSessions.
+    """
     if len(payload) < 3:
-        return None
-    return payload[0] | (payload[1] << 8) | (payload[2] << 16)
+        return None, None
+    records = payload[0] | (payload[1] << 8) | (payload[2] << 16)
+    sessions = payload[3] if len(payload) > 3 else None
+    return records, sessions
+
+
+def expected_stream_length(records: int, sessions: int | None) -> int:
+    """Estimate the dump size: one byte per record plus a header per session."""
+    return records + SESSION_HEADER_LENGTH * (sessions or 1)
+
+
+def detect_frequency(
+    stream: bytes, expected_records: int | None
+) -> tuple[int, list[Interval]]:
+    """Work out which nibble marks a session header, by framing the stream.
+
+    The app compares the header's high nibble against its own `intervalDuration`
+    — a value that comes from its internal state rather than from anything on
+    the wire, so it cannot simply be read off the device. Rather than guess
+    whether that is the interval frequency or its length in seconds, every
+    candidate is tried and the one that best explains the dump wins: it should
+    frame close to the record count the device reported, without stopping early.
+    """
+    best_frequency = DEFAULT_INTERVAL_FREQUENCY
+    best_intervals: list[Interval] = []
+    best_score: float | None = None
+
+    for candidate in range(16):
+        framer = StreamFramer(candidate, 0.0)
+        framer.feed(stream)
+        count = len(framer.intervals)
+        if not count:
+            continue
+        if expected_records:
+            score = abs(count - expected_records) / expected_records
+        else:
+            # With nothing to compare against, prefer the framing that
+            # accounts for the most of the stream.
+            score = 1.0 - count / max(len(stream), 1)
+        if best_score is None or score < best_score:
+            best_score, best_frequency, best_intervals = score, candidate, framer.intervals
+
+    return best_frequency, best_intervals
 
 
 def summarise(intervals: list[Interval], tzinfo: object = None) -> HistorySummary:
