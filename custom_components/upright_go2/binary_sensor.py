@@ -10,12 +10,11 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import UprightGo2Data
-from .const import LOW_BATTERY_VALUE, ChargingState, PostureState
+from .const import ChargingState, PostureState
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
 from .entity import UprightGo2Entity
 

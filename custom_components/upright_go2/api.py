@@ -23,6 +23,7 @@ from .const import (
     CHAR_ERRORS,
     CHAR_FREESTYLE_SETTING,
     CHAR_FW_VERSION,
+    CHAR_GENERAL_SETTING,
     CHAR_HAL_CONTROL,
     CHAR_HW_VERSION,
     CHAR_OFFLINE_DATA,
@@ -575,13 +576,12 @@ class UprightGo2Client:
 
             buffer = bytearray()
             finished = asyncio.Event()
-            failure: Exception | None = None
             packets = 0
 
             packet_seen = asyncio.Event()
 
             def on_packet(_char: BleakGATTCharacteristic, payload: bytearray) -> None:
-                nonlocal failure, packets
+                nonlocal packets
                 packets += 1
                 buffer.extend(payload)
                 packet_seen.set()
@@ -642,9 +642,6 @@ class UprightGo2Client:
                     await self._client.stop_notify(CHAR_OFFLINE_DATA)
                 except (BleakError, EOFError, TimeoutError) as err:
                     _LOGGER.debug("Could not stop the history stream: %s", err)
-
-            if failure is not None and not buffer:
-                raise UprightGo2Error(f"History download failed: {failure}")
 
             expected = (
                 expected_record_count(pending, sessions)

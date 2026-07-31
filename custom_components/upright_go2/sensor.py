@@ -17,7 +17,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import UprightGo2Data
-from .const import MovementStatus
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
 from .entity import UprightGo2Entity
 
