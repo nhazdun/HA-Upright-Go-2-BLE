@@ -17,6 +17,23 @@ DEFAULT_SCAN_INTERVAL: Final = 300
 MIN_SCAN_INTERVAL: Final = 60
 MAX_SCAN_INTERVAL: Final = 3600
 
+# A posture change must hold for this long before it is believed. The device
+# chatters on/off several times a second around the threshold, which made the
+# binary sensor useless for automations.
+CONF_POSTURE_DEBOUNCE: Final = "posture_debounce"
+DEFAULT_POSTURE_DEBOUNCE: Final = 3.0
+MAX_POSTURE_DEBOUNCE: Final = 60
+
+# The angle is only published once it has moved at least this far. Writing every
+# wobble put ~150k rows a day into the recorder from this one entity.
+CONF_ANGLE_DELTA: Final = "angle_delta"
+DEFAULT_ANGLE_DELTA: Final = 3.0
+MAX_ANGLE_DELTA: Final = 30
+
+# Publish at least this often even when nothing has moved, so the entity does
+# not look stale and its history keeps a heartbeat.
+ANGLE_HEARTBEAT: Final = 300
+
 CONF_HISTORY_INTERVAL: Final = "history_interval"
 DEFAULT_HISTORY_INTERVAL: Final = 3600
 MIN_HISTORY_INTERVAL: Final = 600

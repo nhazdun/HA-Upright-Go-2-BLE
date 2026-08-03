@@ -23,9 +23,11 @@
       "init": {
         "data": {
           "scan_interval": "Polling interval",
-          "history_interval": "History sync interval"
+          "history_interval": "History sync interval",
+          "posture_debounce": "Posture debounce",
+          "angle_delta": "Angle change to report"
         },
-        "description": "How often to re-read battery, settings and errors. Posture and angle are not polled — they stream over BLE notifications. The connection is held open, so the phone app cannot connect while Home Assistant is attached."
+        "description": "Polling interval covers battery, settings and errors — posture and angle stream over BLE notifications instead. Posture debounce is how long a change must hold before it counts, which stops the device's chatter around the threshold from making the slouching sensor unusable in automations. Angle change to report keeps small wobbles out of the recorder; raise it if the database grows too fast, lower it for a smoother card. The connection is held open, so the phone app cannot connect while Home Assistant is attached."
       }
     }
   },

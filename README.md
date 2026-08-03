@@ -97,15 +97,32 @@ the app renders as sitting versus moving. It is reported as *still* or *moving*.
 Training versus tracking is not a device mode — in the app it is just whether
 the buzz is on, which is the **Vibration** switch.
 
-## Recorder load
+## Noise, and why it matters
 
-The angle characteristic notifies about 15 times a second. Recording all of it
-writes tens of thousands of rows an hour, so updates are published twice a
-second — fast enough that the card still reads as live.
+The device emits the angle about fifteen times a second and flips its posture
+bit several times a second whenever you hover near the threshold. Taken at face
+value that produces two problems, and both are handled in the integration
+rather than left for you to paper over:
 
-If database size matters more than the angle's history, exclude just that
-sensor and the write rate drops to almost nothing while everything else keeps
-working:
+**Posture debounce** (default 3 s). A posture change has to hold before it is
+believed. Without it the slouching binary sensor toggled on/off within the same
+second, which makes it useless as an automation trigger — you would have needed
+`for: 00:00:30` on every trigger or a template sensor with your own debounce.
+The debounced value also drives the time accounting, so the totals stop
+counting chatter.
+
+**Angle change to report** (default 3°). The angle is published only once it has
+actually moved that far, with a five-minute heartbeat so its history never goes
+silent. Rate-limiting alone was not enough: at two updates a second it still
+wrote roughly 150k rows a day from this one entity, enough to bloat a SQLite
+recorder within a week and slow down history queries for everything else.
+Measured against the real notification rate, the two gates together take it
+from ~227k rows a day to ~15k.
+
+Both are under the integration's **Configure** menu. Raise the angle threshold
+to 5° if the database still grows faster than you like; lower it for smoother
+card animation. If you do not want the raw angle recorded at all, the totals
+already carry everything needed for analysis:
 
 ```yaml
 recorder:

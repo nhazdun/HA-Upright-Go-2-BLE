@@ -23,13 +23,19 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_ANGLE_DELTA,
     CONF_HISTORY_INTERVAL,
+    CONF_POSTURE_DEBOUNCE,
     CONF_SCAN_INTERVAL,
+    DEFAULT_ANGLE_DELTA,
     DEFAULT_HISTORY_INTERVAL,
+    DEFAULT_POSTURE_DEBOUNCE,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     KNOWN_LOCAL_NAMES,
+    MAX_ANGLE_DELTA,
     MAX_HISTORY_INTERVAL,
+    MAX_POSTURE_DEBOUNCE,
     MAX_SCAN_INTERVAL,
     MIN_HISTORY_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -137,6 +143,8 @@ class UprightGo2OptionsFlow(OptionsFlow):
                 data={
                     CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                     CONF_HISTORY_INTERVAL: int(user_input[CONF_HISTORY_INTERVAL]),
+                    CONF_POSTURE_DEBOUNCE: float(user_input[CONF_POSTURE_DEBOUNCE]),
+                    CONF_ANGLE_DELTA: float(user_input[CONF_ANGLE_DELTA]),
                 }
             )
 
@@ -168,6 +176,32 @@ class UprightGo2OptionsFlow(OptionsFlow):
                             max=MAX_HISTORY_INTERVAL,
                             step=600,
                             unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_POSTURE_DEBOUNCE,
+                        default=options.get(
+                            CONF_POSTURE_DEBOUNCE, DEFAULT_POSTURE_DEBOUNCE
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=MAX_POSTURE_DEBOUNCE,
+                            step=1,
+                            unit_of_measurement="s",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_ANGLE_DELTA,
+                        default=options.get(CONF_ANGLE_DELTA, DEFAULT_ANGLE_DELTA),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=MAX_ANGLE_DELTA,
+                            step=0.5,
+                            unit_of_measurement="°",
                             mode=NumberSelectorMode.BOX,
                         )
                     ),

@@ -35,6 +35,7 @@ from .const import (
     CHAR_SMOOTH_ANGLE,
     CHAR_START_CALIBRATION,
     CHAR_VIBRATION_STATUS,
+    DEFAULT_POSTURE_DEBOUNCE,
     DELAY_MULTIPLIER,
     DEVICE_ERRORS,
     FREESTYLE_LENGTH,
@@ -219,6 +220,10 @@ class UprightGo2Client:
         self._reconnect_delay = RECONNECT_MIN_DELAY
         self._closing = False
         self.data = UprightGo2Data()
+        # A posture change is only believed once it has held for this long.
+        self.posture_debounce = DEFAULT_POSTURE_DEBOUNCE
+        self._pending_posture: PostureState | None = None
+        self._pending_since = 0.0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the underlying device, e.g. when it moves between proxies."""
@@ -324,11 +329,35 @@ class UprightGo2Client:
         if not payload:
             return
         try:
-            self.data.posture = PostureState(payload[0])
+            raw = PostureState(payload[0])
         except ValueError:
             _LOGGER.debug("Unknown posture state %s", payload[0])
             return
-        self._publish()
+
+        # The device flips this several times a second while you hover around
+        # the threshold. Taking each flip at face value made the binary sensor
+        # unusable for automations and polluted the time accounting, so a new
+        # value has to hold before it counts.
+        if raw is not self._pending_posture:
+            self._pending_posture = raw
+            self._pending_since = time.monotonic()
+        if self.settle_posture():
+            self._publish()
+
+    def settle_posture(self) -> bool:
+        """Commit a pending posture once it has held long enough.
+
+        Returns True when the committed value changed. Called from the angle
+        notifications and the poll as well, so a posture that stops chattering
+        still lands even if no further posture notification arrives.
+        """
+        pending = self._pending_posture
+        if pending is None or pending is self.data.posture:
+            return False
+        if time.monotonic() - self._pending_since < self.posture_debounce:
+            return False
+        self.data.posture = pending
+        return True
 
     def _handle_angle(
         self, _char: BleakGATTCharacteristic, payload: bytearray
@@ -336,6 +365,7 @@ class UprightGo2Client:
         if (angle := decode_angle(bytes(payload))) is None:
             return
         self.data.angle = angle
+        self.settle_posture()
         self._publish()
 
     def _handle_online(
@@ -430,6 +460,8 @@ class UprightGo2Client:
                     data.charging_state = ChargingState(raw)
                 except ValueError:
                     _LOGGER.debug("Unknown charging state %s", raw)
+
+            self.settle_posture()
 
             # Seed the notification-backed values on the first pass, so the
             # entities are populated before anything moves.

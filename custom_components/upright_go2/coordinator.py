@@ -25,9 +25,14 @@ from homeassistant.util import dt as dt_util
 
 from .api import UprightGo2Client, UprightGo2Data, UprightGo2Error
 from .const import (
+    ANGLE_HEARTBEAT,
+    CONF_ANGLE_DELTA,
     CONF_HISTORY_INTERVAL,
+    CONF_POSTURE_DEBOUNCE,
     CONF_SCAN_INTERVAL,
+    DEFAULT_ANGLE_DELTA,
     DEFAULT_HISTORY_INTERVAL,
+    DEFAULT_POSTURE_DEBOUNCE,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ConnectionMode,
@@ -82,6 +87,13 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         self._counted_until: datetime | None = None
         self._last_push: datetime | None = None
         self._last_posture: PostureState | None = None
+        self._last_angle: float | None = None
+        self._angle_delta = float(
+            entry.options.get(CONF_ANGLE_DELTA, DEFAULT_ANGLE_DELTA)
+        )
+        self._posture_debounce = float(
+            entry.options.get(CONF_POSTURE_DEBOUNCE, DEFAULT_POSTURE_DEBOUNCE)
+        )
 
     async def async_load(self) -> None:
         """Restore the counters so a restart does not reset them to zero."""
@@ -141,25 +153,38 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         self.hass.loop.call_soon_threadsafe(self._apply_notification, data)
 
     def _apply_notification(self, data: UprightGo2Data) -> None:
-        """Bank live posture time, then publish the update.
+        """Bank live posture time, then decide whether it is worth publishing.
 
-        The device pushes the angle many times a second. Publishing every one
-        wrote tens of thousands of rows an hour to the recorder, which lagged
-        statistics and made the dashboard stutter — so the state machine is
-        updated at most once a second. A change of posture always goes through
-        immediately, because that is the moment worth reacting to. Timing is
-        unaffected: the clock is ticked on every notification either way.
+        The device pushes the angle around fifteen times a second. Rate alone
+        is not enough of a filter — capping it still wrote every wobble, about
+        150k recorder rows a day from this one entity. So the angle has to have
+        actually moved before it is published, with a heartbeat so its history
+        does not go silent while you sit still.
+
+        Posture is exempt from the rate cap because it is the moment worth
+        reacting to, and it is safe to be: the value is debounced upstream, so
+        this only ever sees a change that has already held.
         """
         now = dt_util.utcnow()
         self._tick(data, now)
 
         posture_changed = data.posture is not self._last_posture
-        self._last_posture = data.posture
-
+        moved = (
+            self._last_angle is None
+            or data.angle is None
+            or abs(data.angle - self._last_angle) >= self._angle_delta
+        )
         elapsed = (now - self._last_push).total_seconds() if self._last_push else None
-        if posture_changed or elapsed is None or elapsed >= MIN_PUSH_INTERVAL:
-            self._last_push = now
-            self.async_set_updated_data(data)
+        stale = elapsed is None or elapsed >= ANGLE_HEARTBEAT
+        rate_ok = elapsed is None or elapsed >= MIN_PUSH_INTERVAL
+
+        if not (posture_changed or stale or (moved and rate_ok)):
+            return
+
+        self._last_posture = data.posture
+        self._last_angle = data.angle
+        self._last_push = now
+        self.async_set_updated_data(data)
 
     def _get_client(self) -> UprightGo2Client:
         """Return a client bound to the current BLEDevice.
@@ -187,6 +212,7 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
             self._client = UprightGo2Client(ble_device, self._handle_notification)
         else:
             self._client.set_ble_device(ble_device)
+        self._client.posture_debounce = self._posture_debounce
         return self._client
 
     async def _async_update_data(self) -> UprightGo2Data:
