@@ -11,9 +11,16 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 
+from .binary_sensor import BINARY_SENSORS
+from .button import BUTTONS
 from .const import DOMAIN
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
+from .number import NUMBERS
+from .select import MODE, PATTERN, STRENGTH
+from .sensor import SENSORS
+from .switch import VIBRATION
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +35,36 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.SWITCH,
 ]
+
+
+def _async_forget_removed_entities(
+    hass: HomeAssistant, entry: UprightGo2ConfigEntry, address: str
+) -> None:
+    """Drop registry entries for entities this version no longer creates.
+
+    Home Assistant keeps an entity in the registry after the integration stops
+    creating it, so every entity dropped along the way — the per-day totals, the
+    duplicate charging and posture sensors, the unverified error pair — lingered
+    on the device page as "unavailable". That reads as a broken integration.
+
+    The valid set is derived from the same descriptions the platforms use, so
+    this needs no maintenance as entities come and go.
+    """
+    valid = {description.key for description in SENSORS}
+    valid |= {description.key for description in BINARY_SENSORS}
+    valid |= {description.key for description in BUTTONS}
+    valid |= {description.key for description in NUMBERS}
+    valid |= {MODE.key, PATTERN.key, STRENGTH.key, VIBRATION.key}
+    known = {f"{address}_{key}" for key in valid}
+
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.unique_id in known:
+            continue
+        _LOGGER.info(
+            "Removing %s: no longer provided by this integration", entity.entity_id
+        )
+        registry.async_remove(entity.entity_id)
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:
@@ -100,6 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UprightGo2ConfigEntry) -
     address: str = entry.data[CONF_ADDRESS]
 
     await _async_register_card(hass)
+    _async_forget_removed_entities(hass, entry, address)
 
     if not bluetooth.async_ble_device_from_address(hass, address, connectable=True):
         raise ConfigEntryNotReady(
