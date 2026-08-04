@@ -82,6 +82,9 @@ from .history import (
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 20.0
+# The device notifies many times a second. Silence for this long while the link
+# still claims to be up means it is dead and bleak has not noticed.
+NOTIFY_TIMEOUT = 60.0
 # Give up on a dump once the device has been silent this long.
 IDLE_TIMEOUT = 8.0
 
@@ -224,6 +227,8 @@ class UprightGo2Client:
         self.posture_debounce = DEFAULT_POSTURE_DEBOUNCE
         self._pending_posture: PostureState | None = None
         self._pending_since = 0.0
+        self._last_notification = 0.0
+        self._reads_ok = 0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the underlying device, e.g. when it moves between proxies."""
@@ -284,6 +289,7 @@ class UprightGo2Client:
                     f"Could not connect to {self._ble_device.address}: {err}"
                 ) from err
 
+            self._last_notification = time.monotonic()
             await self._async_subscribe()
 
     async def _async_subscribe(self) -> None:
@@ -320,8 +326,28 @@ class UprightGo2Client:
     # --- notification handlers ----------------------------------------------
 
     def _publish(self) -> None:
+        self._last_notification = time.monotonic()
         if self._notify_callback is not None:
             self._notify_callback(self.data)
+
+    @property
+    def stalled(self) -> bool:
+        """Return True when the link is up but nothing is coming through."""
+        if not self.connected or not self._last_notification:
+            return False
+        return time.monotonic() - self._last_notification > NOTIFY_TIMEOUT
+
+    async def async_force_reconnect(self) -> None:
+        """Tear the link down so the next poll rebuilds it."""
+        client = self._client
+        self._client = None
+        self._last_notification = 0.0
+        if client is None:
+            return
+        try:
+            await client.disconnect()
+        except (BleakError, EOFError, TimeoutError) as err:
+            _LOGGER.debug("Error dropping a stalled link: %s", err)
 
     def _handle_posture(
         self, _char: BleakGATTCharacteristic, payload: bytearray
@@ -402,10 +428,12 @@ class UprightGo2Client:
         if self._client is None:
             return None
         try:
-            return bytes(await self._client.read_gatt_char(uuid))
+            value = bytes(await self._client.read_gatt_char(uuid))
         except (BleakError, EOFError, TimeoutError) as err:
             _LOGGER.debug("Could not read %s: %s", uuid, err)
             return None
+        self._reads_ok += 1
+        return value
 
     @staticmethod
     def _decode_text(payload: bytes | None) -> str | None:
@@ -436,11 +464,24 @@ class UprightGo2Client:
 
     async def async_poll(self) -> UprightGo2Data:
         """Refresh the values that have no notification."""
+        if self.stalled:
+            # bleak still reports the link as connected, but nothing has
+            # arrived. Reads on a link in this state quietly return nothing, so
+            # the poll would otherwise look successful and the entities would
+            # sit on stale values while the posture clock kept counting.
+            _LOGGER.warning(
+                "No notifications for %.0fs — dropping the link and reconnecting",
+                NOTIFY_TIMEOUT,
+            )
+            await self.async_force_reconnect()
+            raise UprightGo2Error("Notification stream stalled")
+
         if not self.connected:
             await self.async_connect()
 
         async with self._lock:
             data = self.data
+            self._reads_ok = 0
 
             if (power_first := await self._read(CHAR_POWER_DATA_FIRST)) and len(
                 power_first
@@ -525,6 +566,12 @@ class UprightGo2Client:
                         await self._read(CHAR_HW_VERSION)
                     ),
                 }
+            if not self._reads_ok:
+                # Every read came back empty. Reporting success here would leave
+                # the entities on stale values and let the posture clock keep
+                # crediting time against a device that is not answering.
+                raise UprightGo2Error("Device did not answer any read")
+
             data.serial_number = self._static_info.get("serial_number")
             data.firmware_version = self._static_info.get("firmware_version")
             data.hardware_version = self._static_info.get("hardware_version")
