@@ -7,6 +7,8 @@ proxy**, so the device does not need to be near the Home Assistant host.
 No cloud, no account, no phone app in the loop. Home Assistant connects
 directly to the device's GATT services.
 
+<img src="docs/card.png" alt="The posture card: running totals, a ring that turns red on a slouch, and a silhouette that leans with the live angle" width="420">
+
 ## What you get
 
 | Entity | Type | Notes |
@@ -116,8 +118,8 @@ actually moved that far, with a five-minute heartbeat so its history never goes
 silent. Rate-limiting alone was not enough: at two updates a second it still
 wrote roughly 150k rows a day from this one entity, enough to bloat a SQLite
 recorder within a week and slow down history queries for everything else.
-Measured against the real notification rate, the two gates together take it
-from ~227k rows a day to ~15k.
+Measured on a real device, the two gates together took this from about 150k
+rows a day to roughly 5,700 — a rate of 0.07 writes a second while seated.
 
 Both are under the integration's **Configure** menu. Raise the angle threshold
 to 5° if the database still grows faster than you like; lower it for smoother
