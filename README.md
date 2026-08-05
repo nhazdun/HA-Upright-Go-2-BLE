@@ -147,6 +147,12 @@ once the current one returns, so a single read with no deadline does not cost
 one cycle — it stops every future cycle, the watchdog included, and the
 integration goes silent with nothing in the log.
 
+A connection is also checked for the characteristics that carry the posture bit
+and the angle. Service discovery can come back without them, and because the
+service table is cached, every later reconnect is handed the same broken one:
+the link comes up, nothing ever notifies, and no error is logged. When that
+happens the cache is dropped and the services are rediscovered.
+
 ## Protocol
 
 The BLE protocol was reverse-engineered from the official Android app and is

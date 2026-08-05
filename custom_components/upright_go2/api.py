@@ -94,6 +94,14 @@ IDLE_TIMEOUT = 8.0
 # current one finishes, one such read silently stopped every future poll,
 # including the stall watchdog that exists to catch exactly this.
 GATT_TIMEOUT = 10.0
+# Without these the device is not usable: they carry the posture bit and the
+# angle, and both only ever arrive as notifications. Service discovery can come
+# back without them -- see _async_open -- and that has to be treated as a failed
+# connection rather than a successful one that happens to be silent.
+REQUIRED_CHARS = (CHAR_POSTURE_STATUS, CHAR_SMOOTH_ANGLE)
+# How many times to re-attach the subscriptions before concluding that the link
+# itself, and not just the subscription, is the problem.
+MAX_RESUBSCRIBES = 2
 
 # 0xFF is the app's IGNORE_VALUE; C3 BF is that byte after a UTF-8 round trip.
 _FILLER_BYTES = frozenset({0x00, 0xFF, 0xC3, 0xBF})
@@ -236,6 +244,7 @@ class UprightGo2Client:
         self._pending_since = 0.0
         self._last_notification = 0.0
         self._reads_ok = 0
+        self._resubscribes = 0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the underlying device, e.g. when it moves between proxies."""
@@ -304,22 +313,78 @@ class UprightGo2Client:
             if self.connected:
                 return
             self._closing = False
-            try:
-                self._client = await establish_connection(
-                    BleakClient,
-                    self._ble_device,
-                    self._ble_device.address,
-                    disconnected_callback=self._on_disconnect,
-                    timeout=CONNECT_TIMEOUT,
-                )
-            except (BleakError, TimeoutError) as err:
-                raise UprightGo2Error(
-                    f"Could not connect to {self._ble_device.address}: {err}"
-                ) from err
+            await self._async_open(use_cache=True)
+
+            if self._missing_chars():
+                # Discovery came back without the characteristics the device
+                # certainly has. establish_connection reuses a cached service
+                # table by default, so every reconnect would be handed the same
+                # broken one -- the link comes up, nothing ever notifies, and
+                # there is no error anywhere to say why. Throw the cache away
+                # and rediscover before treating this as a real failure.
+                _LOGGER.debug("Incomplete service table; rediscovering")
+                await self._async_drop(clear_cache=True)
+                await self._async_open(use_cache=False)
+                if missing := self._missing_chars():
+                    await self._async_drop(clear_cache=True)
+                    raise UprightGo2Error(
+                        "Connected without the posture characteristics: "
+                        + ", ".join(missing)
+                    )
 
             self._last_notification = time.monotonic()
             self._reconnect_delay = RECONNECT_MIN_DELAY
+            self._resubscribes = 0
             await self._async_subscribe()
+
+    async def _async_open(self, *, use_cache: bool) -> None:
+        """Bring the link up, optionally trusting the cached service table."""
+        try:
+            self._client = await establish_connection(
+                BleakClient,
+                self._ble_device,
+                self._ble_device.address,
+                disconnected_callback=self._on_disconnect,
+                timeout=CONNECT_TIMEOUT,
+                use_services_cache=use_cache,
+            )
+        except (BleakError, TimeoutError) as err:
+            raise UprightGo2Error(
+                f"Could not connect to {self._ble_device.address}: {err}"
+            ) from err
+
+    def _missing_chars(self) -> list[str]:
+        """Return the required characteristics discovery did not find."""
+        client = self._client
+        if client is None:
+            return list(REQUIRED_CHARS)
+        try:
+            services = client.services
+        except BleakError:
+            return list(REQUIRED_CHARS)
+        return [
+            uuid for uuid in REQUIRED_CHARS
+            if services.get_characteristic(uuid) is None
+        ]
+
+    async def _async_drop(self, *, clear_cache: bool) -> None:
+        """Close the link, optionally binning its cached service table."""
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        if clear_cache:
+            try:
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await client.clear_cache()
+            except (BleakError, EOFError, TimeoutError, AttributeError) as err:
+                _LOGGER.debug("Could not clear the service cache: %s", err)
+        try:
+            # The disconnect can hang for the same reason the link did.
+            async with asyncio.timeout(GATT_TIMEOUT):
+                await client.disconnect()
+        except (BleakError, EOFError, TimeoutError) as err:
+            _LOGGER.debug("Error dropping the link: %s", err)
 
     async def _async_subscribe(self) -> None:
         """Attach to the characteristics that push updates."""
@@ -333,8 +398,9 @@ class UprightGo2Client:
             try:
                 await self._client.start_notify(uuid, handler)
             except (BleakError, TimeoutError) as err:
-                # Not every firmware exposes all three as notifiable; the
-                # slow poll still picks these values up.
+                # Not every firmware exposes all four as notifiable; the slow
+                # poll still picks these values up. The ones that matter are
+                # checked before we get here.
                 _LOGGER.debug("Could not subscribe to %s: %s", uuid, err)
 
     async def async_disconnect(self) -> None:
@@ -356,6 +422,7 @@ class UprightGo2Client:
 
     def _publish(self) -> None:
         self._last_notification = time.monotonic()
+        self._resubscribes = 0
         if self._notify_callback is not None:
             self._notify_callback(self.data)
 
@@ -368,16 +435,9 @@ class UprightGo2Client:
 
     async def async_force_reconnect(self) -> None:
         """Drop a dead link and start rebuilding it straight away."""
-        client = self._client
-        self._client = None
         self._last_notification = 0.0
-        if client is not None:
-            try:
-                # The disconnect can hang for the same reason the link did.
-                async with asyncio.timeout(GATT_TIMEOUT):
-                    await client.disconnect()
-            except (BleakError, EOFError, TimeoutError) as err:
-                _LOGGER.debug("Error dropping a stalled link: %s", err)
+        # A link worth killing is one whose cached service table is suspect.
+        await self._async_drop(clear_cache=True)
         # Do not rely on the disconnect callback firing: on a half-open link it
         # is exactly the thing that failed to arrive.
         self._ensure_reconnecting()
@@ -500,15 +560,28 @@ class UprightGo2Client:
         """Refresh the values that have no notification."""
         if self.stalled:
             # bleak still reports the link as connected, but nothing has
-            # arrived. Reads on a link in this state quietly return nothing, so
-            # the poll would otherwise look successful and the entities would
-            # sit on stale values while the posture clock kept counting.
-            _LOGGER.warning(
-                "No notifications for %.0fs — dropping the link and reconnecting",
-                NOTIFY_TIMEOUT,
-            )
-            await self.async_force_reconnect()
-            raise UprightGo2Error("Notification stream stalled")
+            # arrived. Usually only the subscriptions died, and re-attaching
+            # costs one round trip; tearing down a link that still reads fine
+            # just makes every entity unavailable for no reason. Give that a
+            # couple of tries before concluding the link itself is the problem.
+            if self._resubscribes < MAX_RESUBSCRIBES and not self._missing_chars():
+                self._resubscribes += 1
+                _LOGGER.debug(
+                    "No notifications for %.0fs — resubscribing (%s/%s)",
+                    NOTIFY_TIMEOUT,
+                    self._resubscribes,
+                    MAX_RESUBSCRIBES,
+                )
+                async with self._lock:
+                    await self._async_subscribe()
+                self._last_notification = time.monotonic()
+            else:
+                _LOGGER.warning(
+                    "No notifications for %.0fs — dropping the link and reconnecting",
+                    NOTIFY_TIMEOUT,
+                )
+                await self.async_force_reconnect()
+                raise UprightGo2Error("Notification stream stalled")
 
         if not self.connected:
             await self.async_connect()
