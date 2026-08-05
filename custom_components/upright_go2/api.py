@@ -87,6 +87,13 @@ CONNECT_TIMEOUT = 20.0
 NOTIFY_TIMEOUT = 60.0
 # Give up on a dump once the device has been silent this long.
 IDLE_TIMEOUT = 8.0
+# A single GATT operation must not be able to hang forever. Bleak applies no
+# deadline of its own, and a read on a half-open link — the proxy still holds
+# the connection, the device is long gone — simply never returns. Because reads
+# hold the client lock and the coordinator only schedules its next poll once the
+# current one finishes, one such read silently stopped every future poll,
+# including the stall watchdog that exists to catch exactly this.
+GATT_TIMEOUT = 10.0
 
 # 0xFF is the app's IGNORE_VALUE; C3 BF is that byte after a UTF-8 round trip.
 _FILLER_BYTES = frozenset({0x00, 0xFF, 0xC3, 0xBF})
@@ -247,8 +254,28 @@ class UprightGo2Client:
             return
         _LOGGER.debug("%s disconnected", self._ble_device.address)
         self._client = None
+        self._ensure_reconnecting()
+
+    def _ensure_reconnecting(self) -> None:
+        """Start the reconnect loop unless one is already running.
+
+        Every route back to a live link goes through here, so a caller that
+        drops the connection itself does not have to wait for the next poll to
+        notice.
+        """
+        if self._closing:
+            return
         if self._reconnect_task is None or self._reconnect_task.done():
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            self._reconnect_task.add_done_callback(self._reconnect_finished)
+
+    @staticmethod
+    def _reconnect_finished(task: asyncio.Task[None]) -> None:
+        """Surface a reconnect loop that died instead of losing it."""
+        if task.cancelled():
+            return
+        if (err := task.exception()) is not None:
+            _LOGGER.error("Reconnect loop stopped unexpectedly: %s", err)
 
     async def _reconnect_loop(self) -> None:
         """Reconnect with backoff until the link is restored."""
@@ -258,7 +285,10 @@ class UprightGo2Client:
                 return
             try:
                 await self.async_connect()
-            except UprightGo2Error as err:
+            except Exception as err:  # noqa: BLE001
+                # Narrowing this to UprightGo2Error let anything else kill the
+                # loop for good: the task ends, and only a fresh disconnect
+                # callback would ever start another one.
                 self._reconnect_delay = min(
                     self._reconnect_delay * 2, RECONNECT_MAX_DELAY
                 )
@@ -267,8 +297,6 @@ class UprightGo2Client:
                     err,
                     self._reconnect_delay,
                 )
-            else:
-                self._reconnect_delay = RECONNECT_MIN_DELAY
 
     async def async_connect(self) -> None:
         """Establish the link and subscribe to posture notifications."""
@@ -290,6 +318,7 @@ class UprightGo2Client:
                 ) from err
 
             self._last_notification = time.monotonic()
+            self._reconnect_delay = RECONNECT_MIN_DELAY
             await self._async_subscribe()
 
     async def _async_subscribe(self) -> None:
@@ -338,16 +367,20 @@ class UprightGo2Client:
         return time.monotonic() - self._last_notification > NOTIFY_TIMEOUT
 
     async def async_force_reconnect(self) -> None:
-        """Tear the link down so the next poll rebuilds it."""
+        """Drop a dead link and start rebuilding it straight away."""
         client = self._client
         self._client = None
         self._last_notification = 0.0
-        if client is None:
-            return
-        try:
-            await client.disconnect()
-        except (BleakError, EOFError, TimeoutError) as err:
-            _LOGGER.debug("Error dropping a stalled link: %s", err)
+        if client is not None:
+            try:
+                # The disconnect can hang for the same reason the link did.
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await client.disconnect()
+            except (BleakError, EOFError, TimeoutError) as err:
+                _LOGGER.debug("Error dropping a stalled link: %s", err)
+        # Do not rely on the disconnect callback firing: on a half-open link it
+        # is exactly the thing that failed to arrive.
+        self._ensure_reconnecting()
 
     def _handle_posture(
         self, _char: BleakGATTCharacteristic, payload: bytearray
@@ -428,7 +461,8 @@ class UprightGo2Client:
         if self._client is None:
             return None
         try:
-            value = bytes(await self._client.read_gatt_char(uuid))
+            async with asyncio.timeout(GATT_TIMEOUT):
+                value = bytes(await self._client.read_gatt_char(uuid))
         except (BleakError, EOFError, TimeoutError) as err:
             _LOGGER.debug("Could not read %s: %s", uuid, err)
             return None
@@ -570,6 +604,9 @@ class UprightGo2Client:
                 # Every read came back empty. Reporting success here would leave
                 # the entities on stale values and let the posture clock keep
                 # crediting time against a device that is not answering.
+                # The link is proven dead, so rebuild it now instead of waiting
+                # out the stall watchdog for another minute of silence.
+                await self.async_force_reconnect()
                 raise UprightGo2Error("Device did not answer any read")
 
             data.serial_number = self._static_info.get("serial_number")
@@ -588,7 +625,8 @@ class UprightGo2Client:
             if self._client is None:
                 raise UprightGo2Error("Not connected")
             try:
-                await self._client.write_gatt_char(uuid, payload, response=True)
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await self._client.write_gatt_char(uuid, payload, response=True)
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"Could not write {uuid}: {err}") from err
 
@@ -680,11 +718,12 @@ class UprightGo2Client:
                 ) from err
 
             try:
-                await self._client.write_gatt_char(
-                    CHAR_DATA_COMMAND,
-                    bytes([DataTransferCommand.START_TRANSFER_NO_APPROVAL]),
-                    response=True,
-                )
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await self._client.write_gatt_char(
+                        CHAR_DATA_COMMAND,
+                        bytes([DataTransferCommand.START_TRANSFER_NO_APPROVAL]),
+                        response=True,
+                    )
                 # Stop on the overall deadline, but also give up early once the
                 # device has gone quiet — waiting the full timeout for packets
                 # that will never come just holds the connection hostage.
@@ -777,9 +816,10 @@ class UprightGo2Client:
                 else COMPATIBILITY_MODE_POSTURE
             )
             try:
-                await self._client.write_gatt_char(
-                    CHAR_GENERAL_SETTING, bytes(payload), response=True
-                )
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await self._client.write_gatt_char(
+                        CHAR_GENERAL_SETTING, bytes(payload), response=True
+                    )
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"Could not switch mode: {err}") from err
             self.data.mode = mode
@@ -818,8 +858,9 @@ class UprightGo2Client:
                 payload[OFFSET_BACKWARDS_SLOUCH_RANGE] = int(value)
 
             try:
-                await self._client.write_gatt_char(
-                    CHAR_FREESTYLE_SETTING, bytes(payload), response=True
-                )
+                async with asyncio.timeout(GATT_TIMEOUT):
+                    await self._client.write_gatt_char(
+                        CHAR_FREESTYLE_SETTING, bytes(payload), response=True
+                    )
             except (BleakError, TimeoutError) as err:
                 raise UprightGo2Error(f"Could not write settings: {err}") from err

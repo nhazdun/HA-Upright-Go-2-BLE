@@ -133,6 +133,20 @@ recorder:
       - sensor.upright_go_2_posture_angle
 ```
 
+## Staying connected
+
+A Bluetooth link can die without either end noticing — the proxy still holds the
+connection open, the device is already gone. Every GATT operation therefore has
+its own deadline, the whole poll has one behind it, and a link that goes quiet
+for a minute while still claiming to be up is torn down on purpose. Any of those
+starts a reconnect immediately rather than waiting for the next poll, with a
+5 s to 2 min backoff.
+
+This matters more than it sounds: the coordinator only schedules its next poll
+once the current one returns, so a single read with no deadline does not cost
+one cycle — it stops every future cycle, the watchdog included, and the
+integration goes silent with nothing in the log.
+
 ## Protocol
 
 The BLE protocol was reverse-engineered from the official Android app and is

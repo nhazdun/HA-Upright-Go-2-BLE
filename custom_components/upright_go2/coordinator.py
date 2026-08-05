@@ -50,6 +50,9 @@ SAVE_DELAY = 30
 # ~7x lower than the device's. See the README for excluding the angle sensor
 # from the recorder if database size matters more than its history.
 MIN_PUSH_INTERVAL = 0.5
+# Longer than any single poll should ever take, short enough that a wedged one
+# costs a cycle rather than the rest of the day.
+POLL_TIMEOUT = 45.0
 
 type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 
@@ -219,7 +222,16 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         """Reconnect if needed and refresh the non-notifying values."""
         client = self._get_client()
         try:
-            data = await client.async_poll()
+            # A second line of defence behind the per-operation deadlines: the
+            # coordinator schedules its next poll only after this one returns,
+            # so anything that blocks here indefinitely takes the integration
+            # down for good rather than for one cycle.
+            async with asyncio.timeout(POLL_TIMEOUT):
+                data = await client.async_poll()
+        except TimeoutError as err:
+            self._clock.pause(dt_util.utcnow())
+            await client.async_force_reconnect()
+            raise UpdateFailed("Timed out polling the device") from err
         except UprightGo2Error as err:
             # The link is down, so stop the clock rather than banking the
             # outage as posture time once it comes back.
