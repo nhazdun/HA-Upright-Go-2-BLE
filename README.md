@@ -14,7 +14,7 @@ directly to the device's GATT services.
 | Entity | Type | Notes |
 |---|---|---|
 | Battery | sensor | percent |
-| Charging | binary sensor | `battery_charging` device class |
+| Charging | binary sensor | on whenever it sits on the charger, full included |
 | Slouching | binary sensor | |
 | Posture angle | sensor | degrees, one decimal |
 | Movement | sensor | still / moving, from the live interval stream |
@@ -53,7 +53,7 @@ A watermark of what has already been counted keeps the two from
 double-counting, and an outage is never banked as posture time. The totals are
 persisted, so a restart continues rather than resetting to zero.
 
-**Nothing is counted while the unit is on its charger.** Off your back it still
+**Nothing is counted while the unit is on its charger**, full or still filling. Off your back it still
 reports a posture, but that is the pose of a device lying on a desk — left
 running, a night on the charger banks as eight hours of perfect posture. So the
 clock stops for as long as it is plugged in (charging *or* full), the automatic

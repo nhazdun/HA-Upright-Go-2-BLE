@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import UprightGo2Data
-from .const import ChargingState, PostureState
+from .const import PostureState
 from .coordinator import UprightGo2ConfigEntry, UprightGo2Coordinator
 from .entity import UprightGo2Entity
 
@@ -31,10 +31,20 @@ BINARY_SENSORS: tuple[UprightGo2BinarySensorDescription, ...] = (
     UprightGo2BinarySensorDescription(
         key="charging",
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
+        # On the charger, not drawing-current-right-now. A full battery keeps
+        # reporting CHARGED while it sits on the dock, and testing only for
+        # CHARGING left this off the whole time the unit was docked at 100 %
+        # — which is exactly when it is off your back and nothing should be
+        # counted. The card reads this to show the charging state.
         value_fn=(
-            lambda data: data.charging_state is ChargingState.CHARGING
+            lambda data: data.on_charger if data.charging_state is not None else None
+        ),
+        # Keep the raw value visible: "charging" alone cannot tell full-on-dock
+        # apart from unplugged, which is what made this hard to see.
+        attrs_fn=(
+            lambda data: {"charging_state": data.charging_state.name.lower()}
             if data.charging_state is not None
-            else None
+            else {}
         ),
     ),
     UprightGo2BinarySensorDescription(
