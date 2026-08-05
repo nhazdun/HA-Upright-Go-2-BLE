@@ -12,6 +12,7 @@ const RED = "#e2483c";
 const RED_SOFT = "#f0938c";
 const GREY = "#8b9096";
 const GREY_SOFT = "#b9bec4";
+const AMBER = "#e8a33d";
 
 const DEFAULTS = {
   // Angle readings that correspond to fully upright and fully slouched. The
@@ -37,6 +38,7 @@ class UprightGo2Card extends HTMLElement {
       angle: find("sensor", "posture_angle"),
       slouching: find("binary_sensor", "slouching"),
       battery: find("sensor", "upright_go_2_battery"),
+      charging: find("binary_sensor", "upright_go_2_charging"),
       slouching_time: find("sensor", "slouching_time"),
       upright_time: find("sensor", "upright_time"),
       vibration: find("switch", "vibration"),
@@ -65,7 +67,7 @@ class UprightGo2Card extends HTMLElement {
   /** The entity keys this card reads, in a stable order. */
   static get WATCHED() {
     return [
-      "angle", "slouching", "battery", "upright_time",
+      "angle", "slouching", "charging", "battery", "upright_time",
       "slouching_time", "vibration", "delay",
     ];
   }
@@ -307,7 +309,14 @@ class UprightGo2Card extends HTMLElement {
     const angleState = this._state("angle");
     const offline = dead(slouchState) && dead(angleState);
     const slouching = slouchState ? slouchState.state === "on" : false;
-    const known = !offline && !dead(slouchState);
+
+    // On the charger the unit is off your back, so the posture bit describes a
+    // device on a desk. The totals stop counting it, and the figure must not
+    // imply otherwise -- treat it like a disconnect that happens to say why.
+    const chargeState = this._state("charging");
+    const charging = chargeState ? chargeState.state === "on" : false;
+    const resting = offline || charging;
+    const known = !resting && !dead(slouchState);
 
     const angle = this._num("angle");
     const span = cfg.slouch_angle - cfg.upright_angle;
@@ -317,17 +326,17 @@ class UprightGo2Card extends HTMLElement {
     }
 
     // The ring fills as posture degrades, matching the app's behaviour.
-    const filled = offline ? 0 : known ? 0.15 + ratio * 0.85 : 0;
+    const filled = resting ? 0 : known ? 0.15 + ratio * 0.85 : 0;
     this._set(el.ring, "strokeDashoffset", `${this._circumference * (1 - filled)}`);
-    this._set(el.ring, "stroke", offline ? GREY : slouching ? RED : GREEN);
+    this._set(el.ring, "stroke", charging ? AMBER : offline ? GREY : slouching ? RED : GREEN);
 
     // Stand the figure straight when there is nothing to report, so a stale
     // lean is not mistaken for a live one.
-    const tilt = offline ? 0 : ratio * cfg.max_tilt;
+    const tilt = resting ? 0 : ratio * cfg.max_tilt;
     this._set(el.figure, "transform", `rotate(${tilt.toFixed(1)}deg)`);
-    el.stage.classList.toggle("offline", offline);
-    const solid = offline ? GREY : slouching ? RED : GREEN;
-    const soft = offline ? GREY_SOFT : slouching ? RED_SOFT : GREEN_SOFT;
+    el.stage.classList.toggle("offline", resting);
+    const solid = resting ? GREY : slouching ? RED : GREEN;
+    const soft = resting ? GREY_SOFT : slouching ? RED_SOFT : GREEN_SOFT;
     this._set(el.head, "fill", soft);
     this._set(el.body, "fill", solid);
     this._set(el.belly, "fill", soft);
@@ -335,25 +344,28 @@ class UprightGo2Card extends HTMLElement {
     this._set(
       el.angle,
       "text",
-      offline ? "—" : angle === undefined ? "" : `${angle.toFixed(1)}°`,
+      resting ? "—" : angle === undefined ? "" : `${angle.toFixed(1)}°`,
     );
 
     const battery = this._num("battery");
     let label;
     if (offline) label = "Disconnected";
+    else if (charging) label = "Charging";
     else if (!known) label = "No data";
     else label = slouching ? "Slouching" : "Upright";
     if (!offline && battery !== undefined) label += ` · ${Math.round(battery)}%`;
     el.pillText.textContent = label;
-    el.dot.style.background = known
-      ? slouching ? RED : GREEN
-      : "var(--disabled-text-color)";
-    el.pill.style.background = known
-      ? slouching ? "rgba(226,72,60,.12)" : "rgba(32,192,92,.12)"
-      : "var(--secondary-background-color)";
-    el.pill.style.color = known
-      ? slouching ? RED : GREEN
-      : "var(--secondary-text-color)";
+    el.dot.style.background = charging
+      ? AMBER
+      : known ? slouching ? RED : GREEN : "var(--disabled-text-color)";
+    el.pill.style.background = charging
+      ? "rgba(232,163,61,.14)"
+      : known
+        ? slouching ? "rgba(226,72,60,.12)" : "rgba(32,192,92,.12)"
+        : "var(--secondary-background-color)";
+    el.pill.style.color = charging
+      ? AMBER
+      : known ? slouching ? RED : GREEN : "var(--secondary-text-color)";
 
     this._set(el.tUp, "text", this._duration("upright_time"));
     this._set(el.tDown, "text", this._duration("slouching_time"));
@@ -368,7 +380,7 @@ class UprightGo2Card extends HTMLElement {
     const delay = this._num("delay");
     el.sDel.textContent = delay === undefined ? "Delay" : `${Math.round(delay)}s delay`;
     el.cDel.toggleAttribute("disabled", offline || !this._config.delay);
-    el.cCal.toggleAttribute("disabled", offline || !this._config.calibrate);
+    el.cCal.toggleAttribute("disabled", resting || !this._config.calibrate);
   }
 }
 

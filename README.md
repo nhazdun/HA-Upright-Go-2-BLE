@@ -53,6 +53,20 @@ A watermark of what has already been counted keeps the two from
 double-counting, and an outage is never banked as posture time. The totals are
 persisted, so a restart continues rather than resetting to zero.
 
+**Nothing is counted while the unit is on its charger.** Off your back it still
+reports a posture, but that is the pose of a device lying on a desk — left
+running, a night on the charger banks as eight hours of perfect posture. So the
+clock stops for as long as it is plugged in (charging *or* full), the automatic
+history sync is skipped, and the watermark is walked through the charge so the
+device's own recording cannot re-credit it afterwards. The interval that ends
+with it on the charger is discarded rather than banked, because that is the
+stretch during which it came off your back.
+
+A genuine offline backlog is left alone: if the watermark is more than an hour
+behind, that is a real recording waiting to sync, not a charge, and it is still
+picked up once the unit comes off the charger. The manual *Sync history* button
+always works.
+
 History syncs hourly by default (configurable, 10 min – 24 h) and can be
 triggered with the *Sync history* button. Nothing is deleted from the device
 unless you press *Clear history*, which is disabled by default.
@@ -65,12 +79,14 @@ out of the box.
 The integration ships a custom card and registers it itself — no dashboard
 resource to add by hand. It shows a silhouette that leans with the measured
 angle in real time, a ring that turns red when you slouch, the running totals,
-and a calibrate / vibration / delay row.
+and a calibrate / vibration / delay row. On the charger it goes amber and reads
+*Charging*, with the figure standing straight — see below for why.
 
 ```yaml
 type: custom:upright-go2-card
 angle: sensor.upright_go_2_posture_angle
 slouching: binary_sensor.upright_go_2_slouching
+charging: binary_sensor.upright_go_2_charging
 battery: sensor.upright_go_2_battery
 upright_time: sensor.upright_go_2_upright_time
 slouching_time: sensor.upright_go_2_slouching_time

@@ -38,7 +38,7 @@ from .const import (
     ConnectionMode,
     PostureState,
 )
-from .history import PostureClock, history_since
+from .history import MAX_LIVE_GAP, PostureClock, history_since
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ MIN_PUSH_INTERVAL = 0.5
 # Longer than any single poll should ever take, short enough that a wedged one
 # costs a cycle rather than the rest of the day.
 POLL_TIMEOUT = 45.0
+# How current the watermark has to be before a charge is allowed to advance it.
+# Same bound the clock uses for a plausible live gap.
+CHARGE_WATERMARK_GAP = timedelta(seconds=MAX_LIVE_GAP)
 
 type UprightGo2ConfigEntry = ConfigEntry[UprightGo2Coordinator]
 
@@ -136,9 +139,24 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         """Credit the time since the last tick against the current posture."""
         if data.posture is None:
             return
-        slouching, upright = self._clock.update(
-            data.posture is PostureState.SLOUCH, now
-        )
+
+        if data.on_charger:
+            # On the charger the unit is off your back, so its posture bit
+            # describes a device lying on a desk rather than a person. Stop the
+            # clock; otherwise a night on the charger lands as eight hours of
+            # perfect posture.
+            #
+            # Discard what the clock still owed rather than banking it: the
+            # stretch that ends with the unit on a charger is the stretch
+            # during which it came off your back, so it is not time in any
+            # posture either.
+            self._clock.pause(now)
+            slouching = upright = 0.0
+        else:
+            slouching, upright = self._clock.update(
+                data.posture is PostureState.SLOUCH, now
+            )
+
         if slouching or upright:
             self._slouching += slouching
             self._upright += upright
@@ -146,6 +164,14 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
             self._save()
         elif self._counted_until is None:
             self._counted_until = now
+        elif data.on_charger and now - self._counted_until < CHARGE_WATERMARK_GAP:
+            # Walk the watermark through the charge so this stretch is not
+            # credited later out of the device's own recording. Only while the
+            # watermark is already current: if it is far behind, that is a real
+            # offline backlog and moving it would throw the backlog away.
+            self._counted_until = now
+            self._save()
+
         self._publish(data)
 
     def _handle_notification(self, data: UprightGo2Data) -> None:
@@ -242,8 +268,12 @@ class UprightGo2Coordinator(DataUpdateCoordinator[UprightGo2Data]):
         # straight for an hour produces no events at all.
         self._tick(data, dt_util.utcnow())
 
-        due = data.history_synced is None or (
-            dt_util.utcnow() - data.history_synced >= self._history_interval
+        # Nothing recorded while the unit sits on its charger is worth having,
+        # so do not go and fetch it. The manual Sync history button still works
+        # for anyone who disagrees.
+        due = not data.on_charger and (
+            data.history_synced is None
+            or dt_util.utcnow() - data.history_synced >= self._history_interval
         )
         if due and (self._history_task is None or self._history_task.done()):
             # Never await this here. A dump can take a minute, and the first

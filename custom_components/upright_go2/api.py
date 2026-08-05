@@ -142,6 +142,18 @@ class UprightGo2Data:
     upright_seconds: int | None = None
     history_synced: datetime | None = None
 
+    @property
+    def on_charger(self) -> bool:
+        """Return True while the unit is sitting on its charger.
+
+        CHARGED means full but still plugged in, so it counts as on the
+        charger just as much as CHARGING does.
+        """
+        return self.charging_state in (
+            ChargingState.CHARGING,
+            ChargingState.CHARGED,
+        )
+
     # Device information (read once)
     serial_number: str | None = None
     firmware_version: str | None = None
